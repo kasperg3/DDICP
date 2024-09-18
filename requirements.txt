@@ -1,0 +1,8 @@
+json
+contextily
+matplotlib
+shapely
+trajgenpy
+numpy
+scipy
+seaborn
