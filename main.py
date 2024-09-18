@@ -183,8 +183,8 @@ if __name__ == "__main__":
     use_sliders = True
     plot_environment = True    
     norm = None # Options: "normalize", "clip", None
-    polygon_file = "DemaScenarios/FlatTerrainNature.geojson"
-    # polygon_file = "DemaScenarios/HillyTerrainNature.geojson"
-    # polygon_file = "DemaScenarios/Urban.geojson"
-    polygon_file = "DemaScenarios/Water.geojson"
+    polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
+    # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
+    # polygon_file = "data/DemaScenarios/Urban.geojson"
+    polygon_file = "data/DemaScenarios/Water.geojson"
     interactive_plot(polygon_file, norm)
