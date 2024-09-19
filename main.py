@@ -112,20 +112,23 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
     heatmap = gaussian_filter(road_heatmap + wetland_heatmap, sigma=3)
     heatmap = normalize_heatmap(heatmap, norm)
     # Create a figure and axis for the slider
-    fig, ax = plt.subplots(figsize=(10, 8))
-    # plt.subplots_adjust(left=0.25, bottom=0.25)
-
+    fig, ax = plt.subplots()
+    # Set xlim and ylim based on the bounding box of the polygon
+    # to ensure the basemap has the right location
+    ax.set_xlim(minx - 100, maxx + 100)
+    ax.set_ylim(miny - 100, maxy + 100)
     if plot_environment:
         # Ploting 
-        # road_geom.plot(color="red")
-        # wetland_geom.plot()
+        road_geom.plot(color="red")
+        wetland_geom.plot()
         polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
-        # polygon.buffer(50).plot(
-        #     facecolor="none",
-        #     edgecolor="red",
-        #     linewidth=2,
-        #     linestyle="dashed",
-        # )
+        polygon.buffer(50).plot(
+            facecolor="none",
+            edgecolor="red",
+            linewidth=2,
+            linestyle="dashed",
+        )
+        
         
         alpha = 0.4
         Utils.plot_basemap(provider=cx.providers.OpenStreetMap.Mapnik, crs="EPSG:2197")
