@@ -178,16 +178,43 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
             heatmap_img.set_data(combined_heatmap.T)
             plt.draw()
 
+        # Add a save button
+        save_ax = plt.axes([0.8, 0.025, 0.1, 0.04])
+        save_button = plt.Button(save_ax, 'Save', color='white', hovercolor='0.975')
+
+        def save(event):
+            combined_heatmap = np.zeros_like(road_heatmap)
+            for key, slider in filter_sliders.items():
+                combined_heatmap += gaussian_filter(heatmaps[key]*multiplier_sliders[key].val, sigma=slider.val)
+            combined_heatmap = normalize_heatmap(combined_heatmap, norm)
+            temp_heatmap = np.flipud(combined_heatmap.T) # Makes sure that the map is oriented correctly
+            
+            height, width = temp_heatmap.shape
+            greyscale_with_alpha = np.zeros((height, width, 2), dtype=np.uint8)
+            # Set the grayscale channel based on the matrix values
+            greyscale_with_alpha[..., 0] = temp_heatmap*255  # Greyscale (intensity) values
+            # Set the alpha channel: 255 where matrix > 0, otherwise 0 (transparent)
+            greyscale_with_alpha[..., 1] = np.where(temp_heatmap > 0.01, 255, 0)
+            
+            # Convert to a greyscale image with alpha
+            img = Image.fromarray(greyscale_with_alpha, mode='LA')
+            img.save("heatmap.png")
+            print("Heatmap saved as heatmap.png")
+
+        save_button.on_clicked(save)
+        
         for slider in filter_sliders.values():
             slider.on_changed(update)
         for slider in multiplier_sliders.values():
             slider.on_changed(update)
  
     if export:
-        temp_heatmap = gaussian_filter(road_heatmap + wetland_heatmap, sigma=3)
-        temp_heatmap = normalize_heatmap(temp_heatmap, norm) 
-        temp_heatmap = np.flipud(temp_heatmap.T) # Makes sure that the map is oriented correctly
-        
+        combined_heatmap = np.zeros_like(road_heatmap)
+        for key, slider in filter_sliders.items():
+            combined_heatmap += gaussian_filter(heatmaps[key]*multiplier_sliders[key].val, sigma=slider.val)
+        combined_heatmap = normalize_heatmap(combined_heatmap, norm)
+        temp_heatmap = np.flipud(combined_heatmap.T) # Makes sure that the map is oriented correctly
+            
         height, width = temp_heatmap.shape
         greyscale_with_alpha = np.zeros((height, width, 2), dtype=np.uint8)
         # Set the grayscale channel based on the matrix values
@@ -198,16 +225,19 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         # Convert to a greyscale image with alpha
         img = Image.fromarray(greyscale_with_alpha,mode='LA')
         img.save("test.png")
+        
+
     # plt.axis("equal")
     ax.set_axis_off()
     # plt.savefig("heatmap_2point.png", dpi=1200, bbox_inches='tight')
     plt.show()
+    
 
 # TODO Look into checkboxes for enabling and disabling environmental features: https://gist.github.com/DataSolveProblems/143e2c6f5ecd2c0b4876ac4308e7a2d0
 
 if __name__ == "__main__":
-    use_sliders = False
-    plot_environment = False
+    use_sliders = True
+    plot_environment = True
     norm = "clip" # Options: "normalize", "clip", None
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
