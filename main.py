@@ -12,14 +12,14 @@ from trajgenpy.Geometries import (
 )
 from trajgenpy.Query import query_features
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, fourier_gaussian
 from shapely.geometry import LineString
 from shapely.ops import transform
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Slider
 import matplotlib.colors as mcolors
-
+from PIL import Image
 log = trajgenpy.Logging.get_logger()
 # Function to interpolate points on the line
 def interpolate_line(line, distance):
@@ -56,7 +56,7 @@ def normalize_heatmap(heatmap, norm):
         heatmap = heatmap / np.max(heatmap)
     return heatmap
 
-def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = True):
+def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = True, export = False):
     # Load the GeoJSON data
     with open(polygon_file, "r") as f:
         data = json.load(f)
@@ -112,9 +112,8 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
     heatmap = gaussian_filter(road_heatmap + wetland_heatmap, sigma=3)
     heatmap = normalize_heatmap(heatmap, norm)
     # Create a figure and axis for the slider
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(left=0.25, bottom=0.25)
-
+    fig, ax = plt.subplots(figsize=(10, 8))
+    # plt.subplots_adjust(left=0.25, bottom=0.25)
 
     if plot_environment:
         # Ploting 
@@ -127,20 +126,33 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         #     linewidth=2,
         #     linestyle="dashed",
         # )
+        
         alpha = 0.4
         Utils.plot_basemap(provider=cx.providers.OpenStreetMap.Mapnik, crs="EPSG:2197")
         # colorscheme
         # Flare
-        colors = [(1, 1, 1)] + sns.color_palette("flare", as_cmap=False)
+        # colors = [(1, 1, 1)] + sns.color_palette("flare", as_cmap=False)
+        # Custom colors
+        # colors = [
+        #     (1, 1, 1),  # white
+        #     # (0, 0, 1),  # blue
+        #     # (0, 1, 1),  # cyan
+        #     # (0, 1, 0),  # green
+        #     # (1, 1, 0),  # yellow
+        #     (1, 0, 0),  # red
+        #     (0.5, 0, 0.5),  # purple
+        #     (0, 0, 0)  # purple
+        # ]
+        # palette = LinearSegmentedColormap.from_list("custom_palette", colors)
         # JET
         colors =  [mcolors.to_rgb(c) for c in plt.cm.jet(np.linspace(0, 1, 256))]
         palette = LinearSegmentedColormap.from_list("custom_flare", colors)
     else: 
         alpha = 1
-        palette = "Greys"
+        palette = "gist_gray"
 
     # Use the custom colormap for the heatmap
-    cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=palette), ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
+    cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=palette), ax=ax, orientation='vertical')
     cbar.set_label('Target Distribution')
     extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
     heatmap_img = plt.imshow(heatmap.T, extent=extent, origin='lower', cmap=palette, alpha=alpha)
@@ -150,10 +162,10 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         filter_sliders = {}
         multiplier_sliders = {}
         for key in heatmaps.keys():
-            y_position = 0.2 - 0.05 * list(heatmaps.keys()).index(key)
+            y_position = 0+ 0.05 * list(heatmaps.keys()).index(key)
             
             ax_filter_slider = plt.axes([0.25, y_position, 0.25, 0.03])
-            ax_multiplier_slider = plt.axes([0.55, y_position, 0.25, 0.03])
+            ax_multiplier_slider = plt.axes([0.60, y_position, 0.25, 0.03])
             
             filter_sliders[key] = Slider(ax_filter_slider, f'{key}:  σ', 0.0, 10.0, valinit=3, valstep=0.1)
             multiplier_sliders[key] = Slider(ax_multiplier_slider, 'α', 0.0, 3.0, valinit=1, valstep=0.1)
@@ -171,7 +183,21 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         for slider in multiplier_sliders.values():
             slider.on_changed(update)
  
-
+    if export:
+        temp_heatmap = gaussian_filter(road_heatmap + wetland_heatmap, sigma=3)
+        temp_heatmap = normalize_heatmap(temp_heatmap, norm) 
+        temp_heatmap = np.flipud(temp_heatmap.T) # Makes sure that the map is oriented correctly
+        
+        height, width = temp_heatmap.shape
+        greyscale_with_alpha = np.zeros((height, width, 2), dtype=np.uint8)
+        # Set the grayscale channel based on the matrix values
+        greyscale_with_alpha[..., 0] = temp_heatmap*255  # Greyscale (intensity) values
+        # Set the alpha channel: 255 where matrix > 0, otherwise 0 (transparent)
+        greyscale_with_alpha[..., 1] = np.where(temp_heatmap > 0.01, 255, 0)
+        
+        # Convert to a greyscale image with alpha
+        img = Image.fromarray(greyscale_with_alpha,mode='LA')
+        img.save("test.png")
     # plt.axis("equal")
     ax.set_axis_off()
     # plt.savefig("heatmap_2point.png", dpi=1200, bbox_inches='tight')
@@ -180,11 +206,11 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
 # TODO Look into checkboxes for enabling and disabling environmental features: https://gist.github.com/DataSolveProblems/143e2c6f5ecd2c0b4876ac4308e7a2d0
 
 if __name__ == "__main__":
-    use_sliders = True
-    plot_environment = True    
-    norm = None # Options: "normalize", "clip", None
+    use_sliders = False
+    plot_environment = False
+    norm = "clip" # Options: "normalize", "clip", None
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/Urban.geojson"
-    polygon_file = "data/DemaScenarios/Water.geojson"
-    interactive_plot(polygon_file, norm)
+    # polygon_file = "data/DemaScenarios/Water.geojson"
+    interactive_plot(polygon_file, norm, use_sliders, plot_environment, export=True)
