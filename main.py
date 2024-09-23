@@ -34,7 +34,7 @@ def interpolate_line(line, distance):
     return points
 
 # # Apply the heatmap generation to all road lines
-def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, exterior_feature = True):
+def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, infill_geometries = False):
     heatmap = np.zeros((len(xedges) - 1, len(yedges) - 1))
     for feature in geometry_collection.geoms:
         interpolated_points = []
@@ -42,7 +42,7 @@ def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, exter
             line = feature
             interpolated_points = interpolate_line(line, sample_distance)
         elif isinstance(feature, shapely.geometry.Polygon):        
-            if exterior_feature:
+            if not infill_geometries:
                 line = feature.exterior
                 interpolated_points = interpolate_line(line, sample_distance)                
             else:     
