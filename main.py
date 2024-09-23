@@ -10,6 +10,7 @@ from trajgenpy.Geometries import (
     GeoMultiTrajectory,
     GeoPolygon
 )
+import cv2
 from trajgenpy.Query import query_features
 import numpy as np
 from scipy.ndimage import gaussian_filter, fourier_gaussian
@@ -20,6 +21,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Slider
 import matplotlib.colors as mcolors
 from PIL import Image
+import rasterio.features
 log = trajgenpy.Logging.get_logger()
 # Function to interpolate points on the line
 def interpolate_line(line, distance):
@@ -32,16 +34,25 @@ def interpolate_line(line, distance):
     return points
 
 # # Apply the heatmap generation to all road lines
-def generate_heatmap(geometry_collection, sample_distance, xedges, yedges):
+def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, exterior_feature = True):
     heatmap = np.zeros((len(xedges) - 1, len(yedges) - 1))
     for feature in geometry_collection.geoms:
-        line = None
+        interpolated_points = []
         if isinstance(feature, LineString):
             line = feature
-        elif isinstance(feature, shapely.geometry.Polygon):            
-            line = feature.exterior
+            interpolated_points = interpolate_line(line, sample_distance)
+        elif isinstance(feature, shapely.geometry.Polygon):        
+            if exterior_feature:
+                line = feature.exterior
+                interpolated_points = interpolate_line(line, sample_distance)                
+            else:     
+                # Check if all combinations of xedges and yedges are inside the polygon
+                x_y_combinations = np.array(np.meshgrid(xedges, yedges)).T.reshape(-1, 2)
+                for x, y in x_y_combinations:
+                    point = shapely.geometry.Point(x, y)
+                    if feature.contains(point):
+                        interpolated_points.append(point)
             
-        interpolated_points = interpolate_line(line, sample_distance)
         x, y = zip(*[(point.x, point.y) for point in interpolated_points])
         
         temp_heatmap, _, _ = np.histogram2d(x, y, bins=(xedges, yedges))
@@ -98,20 +109,17 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         building_collection.extend(list(feature.geoms))
     building_geom = GeoMultiPolygon(building_collection).set_crs("EPSG:2197")
     
-    
-
-    # Extract the x and y coordinates of the polygon
-
     # Determine the bounds of the polygon
     sample_distance = 1
     minx, miny, maxx, maxy = polygon.geometry.bounds
 
     # Define the number of bins for the heatmap
-    num_bins = 200
+    num_bins = 300
 
+    buffer = 100 # in meters
     # Create the edges for the histogram bins
-    xedges = np.linspace(minx-100, maxx+100, num_bins + 1)
-    yedges = np.linspace(miny-100, maxy+100, num_bins + 1)
+    xedges = np.linspace(minx-buffer, maxx+buffer, num_bins + 1)
+    yedges = np.linspace(miny-buffer, maxy+buffer, num_bins + 1)
 
     # Generate heatmap for road geometries
     road_heatmap= generate_heatmap(road_geom.geometry, sample_distance, xedges, yedges)
@@ -125,15 +133,15 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
     fig, ax = plt.subplots()
     # Set xlim and ylim based on the bounding box of the polygon
     # to ensure the basemap has the right location
-    ax.set_xlim(minx - 100, maxx + 100)
-    ax.set_ylim(miny - 100, maxy + 100)
+    ax.set_xlim(minx - buffer, maxx + buffer)
+    ax.set_ylim(miny - buffer, maxy + buffer)
     if plot_environment:
         # Ploting 
         road_geom.plot(color="red",
             linestyle="dashed",)
         wetland_geom.plot()
         # polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
-        polygon.buffer(50).plot(
+        polygon.plot(
             facecolor="none",
             edgecolor="black",
             linewidth=2,
