@@ -89,6 +89,16 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
         road_collection.extend(list(road.geoms))
     road_geom = GeoMultiTrajectory(road_collection).set_crs("EPSG:2197")
     
+    building_collection = []
+    buildings = query_features(
+        GeoPolygon(query_region),
+        {"building": True},
+    )
+    for feature in buildings.values():
+        building_collection.extend(list(feature.geoms))
+    building_geom = GeoMultiPolygon(building_collection).set_crs("EPSG:2197")
+    
+    
 
     # Extract the x and y coordinates of the polygon
 
@@ -119,15 +129,16 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
     ax.set_ylim(miny - 100, maxy + 100)
     if plot_environment:
         # Ploting 
-        road_geom.plot(color="red")
+        road_geom.plot(color="red",
+            linestyle="dashed",)
         wetland_geom.plot()
-        polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
+        # polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
         polygon.buffer(50).plot(
             facecolor="none",
-            edgecolor="red",
+            edgecolor="black",
             linewidth=2,
-            linestyle="dashed",
         )
+        # building_geom.plot()
         
         
         alpha = 0.4
@@ -182,7 +193,8 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
             plt.draw()
 
         # Add a save button
-        save_ax = plt.axes([0.8, 0.025, 0.1, 0.04])
+        save_ax = plt.axes([0.5, 0.9, 0.1, 0.04])
+        
         save_button = plt.Button(save_ax, 'Save', color='white', hovercolor='0.975')
 
         def save(event):
@@ -210,29 +222,12 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
             slider.on_changed(update)
         for slider in multiplier_sliders.values():
             slider.on_changed(update)
- 
-    if export:
-        combined_heatmap = np.zeros_like(road_heatmap)
-        for key, slider in filter_sliders.items():
-            combined_heatmap += gaussian_filter(heatmaps[key]*multiplier_sliders[key].val, sigma=slider.val)
-        combined_heatmap = normalize_heatmap(combined_heatmap, norm)
-        temp_heatmap = np.flipud(combined_heatmap.T) # Makes sure that the map is oriented correctly
-            
-        height, width = temp_heatmap.shape
-        greyscale_with_alpha = np.zeros((height, width, 2), dtype=np.uint8)
-        # Set the grayscale channel based on the matrix values
-        greyscale_with_alpha[..., 0] = temp_heatmap*255  # Greyscale (intensity) values
-        # Set the alpha channel: 255 where matrix > 0, otherwise 0 (transparent)
-        greyscale_with_alpha[..., 1] = np.where(temp_heatmap > 0.01, 255, 0)
-        
-        # Convert to a greyscale image with alpha
-        img = Image.fromarray(greyscale_with_alpha,mode='LA')
-        img.save("test.png")
-        
-
+    
     # plt.axis("equal")
     ax.set_axis_off()
-    # plt.savefig("heatmap_2point.png", dpi=1200, bbox_inches='tight')
+
+    if export:
+        plt.savefig("plot.png",bbox_inches='tight')
     plt.show()
     
 
@@ -243,6 +238,7 @@ if __name__ == "__main__":
     plot_environment = True
     norm = "clip" # Options: "normalize", "clip", None
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
+    
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
