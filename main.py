@@ -10,19 +10,16 @@ from trajgenpy.Geometries import (
     GeoMultiTrajectory,
     GeoPolygon
 )
-import cv2
 from trajgenpy.Query import query_features
 import numpy as np
-from scipy.ndimage import gaussian_filter, fourier_gaussian
+from scipy.ndimage import gaussian_filter
 from shapely.geometry import LineString
-from shapely.ops import transform
-import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Slider
 import matplotlib.colors as mcolors
 from PIL import Image
-import rasterio.features
 log = trajgenpy.Logging.get_logger()
+
 # Function to interpolate points on the line
 def interpolate_line(line, distance):
     num_points = int(line.length / distance)
@@ -34,7 +31,7 @@ def interpolate_line(line, distance):
     return points
 
 # # Apply the heatmap generation to all road lines
-def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, infill_geometries = False):
+def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, infill_geometries = True):
     heatmap = np.zeros((len(xedges) - 1, len(yedges) - 1))
     for feature in geometry_collection.geoms:
         interpolated_points = []
@@ -42,16 +39,14 @@ def generate_heatmap(geometry_collection, sample_distance, xedges, yedges, infil
             line = feature
             interpolated_points = interpolate_line(line, sample_distance)
         elif isinstance(feature, shapely.geometry.Polygon):        
-            if not infill_geometries:
-                line = feature.exterior
-                interpolated_points = interpolate_line(line, sample_distance)                
-            else:     
+            if infill_geometries:
                 # Check if all combinations of xedges and yedges are inside the polygon
                 x_y_combinations = np.array(np.meshgrid(xedges, yedges)).T.reshape(-1, 2)
-                for x, y in x_y_combinations:
-                    point = shapely.geometry.Point(x, y)
-                    if feature.contains(point):
-                        interpolated_points.append(point)
+                mask = np.array([feature.contains(shapely.geometry.Point(x, y)) for x, y in x_y_combinations])
+                interpolated_points.extend([shapely.geometry.Point(x, y) for (x, y), m in zip(x_y_combinations, mask) if m])
+            else:
+                line = feature.exterior
+                interpolated_points = interpolate_line(line, sample_distance)
             
         x, y = zip(*[(point.x, point.y) for point in interpolated_points])
         
@@ -63,11 +58,11 @@ def normalize_heatmap(heatmap, norm):
     # Normalize or clip the heatmap
     if norm == "clip":
         heatmap = np.clip(heatmap, 0, 1)
-    elif norm== "normalize":
+    elif norm== "norm":
         heatmap = heatmap / np.max(heatmap)
     return heatmap
 
-def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = True, export = False):
+def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environment = True, export = False):
     # Load the GeoJSON data
     with open(polygon_file, "r") as f:
         data = json.load(f)
@@ -114,12 +109,14 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
     minx, miny, maxx, maxy = polygon.geometry.bounds
 
     # Define the number of bins for the heatmap
-    num_bins = 300
-
+    meter_per_bin = 3
+    num_bins_x = int((maxx - minx) * 1/meter_per_bin)
+    num_bins_y = int((maxy - miny) * 1/meter_per_bin)
+    log.info("Number of bins x: %i y: %i", num_bins_x, num_bins_y)
     buffer = 100 # in meters
     # Create the edges for the histogram bins
-    xedges = np.linspace(minx-buffer, maxx+buffer, num_bins + 1)
-    yedges = np.linspace(miny-buffer, maxy+buffer, num_bins + 1)
+    xedges = np.linspace(minx-buffer, maxx+buffer, num_bins_x + 1)
+    yedges = np.linspace(miny-buffer, maxy+buffer, num_bins_y + 1)
 
     # Generate heatmap for road geometries
     road_heatmap= generate_heatmap(road_geom.geometry, sample_distance, xedges, yedges)
@@ -242,12 +239,9 @@ def interactive_plot(polygon_file,norm, use_sliders=True, plot_environment = Tru
 # TODO Look into checkboxes for enabling and disabling environmental features: https://gist.github.com/DataSolveProblems/143e2c6f5ecd2c0b4876ac4308e7a2d0
 
 if __name__ == "__main__":
-    use_sliders = True
-    plot_environment = True
-    norm = "clip" # Options: "normalize", "clip", None
-    polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
-    
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
-    interactive_plot(polygon_file, norm, use_sliders, plot_environment, export=True)
+    polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
+    
+    interactive_plot(polygon_file, norm="clip", use_sliders=True, plot_environment=True, export=True)
