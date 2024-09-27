@@ -13,6 +13,10 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 
+# Set random seed for reproducibility
+np.random.seed(21)
+
+
 # Helper class
 # ===============================
 class SecondOrderAgent:
@@ -92,7 +96,7 @@ def calculate_gradient(agent, gradient_x, gradient_y):
 
     gradient = np.zeros(2)
     # if agent is inside the grid, interpolate the gradient for agent position
-    if row > 0 and row < param.height - 1 and col > 0 and col < param.width - 1:
+    if row > 0 and row < param.nbResX - 1 and col > 0 and col < param.nbResY - 1:
         gradient[0] = bilinear_interpolation(gradient_x, adjusted_position)
         gradient[1] = bilinear_interpolation(gradient_y, adjusted_position)
 
@@ -102,12 +106,12 @@ def calculate_gradient(agent, gradient_x, gradient_y):
     pad = param.kernel_size - 1
     if row <= pad:
         gradient[1] = boundary_gradient
-    elif row >= param.height - 1 - pad:
+    elif row >= param.nbResX - 1 - pad:
         gradient[1] = -boundary_gradient
 
     if col <= pad:
         gradient[0] = boundary_gradient
-    elif col >= param.width - pad:
+    elif col >= param.nbResY - pad:
         gradient[0] = -boundary_gradient
 
     return gradient
@@ -219,130 +223,13 @@ def bilinear_interpolation(grid, pos):
     c = c01 * (1 - yd) + c11 * yd
     return c
 
-
-# Helper functions borrowed from SMC example given in 
-# demo_ergodicControl_2D_01.py for using the same 
-# target distribution and comparing the results
-# of SMC and HEDAC
-# ===============================
-def hadamard_matrix(n: int) -> np.ndarray:
-    """
-    Constructs a Hadamard matrix of size n.
-
-    Args:
-        n (int): The size of the Hadamard matrix.
-
-    Returns:
-        np.ndarray: A Hadamard matrix of size n.
-    """
-    # Base case: A Hadamard matrix of size 1 is just [[1]].
-    if n == 1:
-        return np.array([[1]])
-
-    # Recursively construct a Hadamard matrix of size n/2.
-    half_size = n // 2
-    h_half = hadamard_matrix(half_size)
-
-    # Combine the four sub-matrices to form a Hadamard matrix of size n.
-    h = np.empty((n, n), dtype=int)
-    h[:half_size,:half_size] = h_half
-    h[half_size:,:half_size] = h_half
-    h[:half_size:,half_size:] = h_half
-    h[half_size:,half_size:] = -h_half
-
-    return h
-
-
-def get_GMM(param):
-    """
-    Same GMM as in ergodic_control_SMC.py
-    """
-    # Gaussian centers
-    Mu1 = [0.5, 0.7]
-    Mu2 = [0.6, 0.3]
-    # Gaussian covariances
-    # direction vectors for constructing the covariance matrix using
-    # outer product of a vector with itself then the principal direction
-    # of covariance matrix becomes the given vector and its orthogonal
-    # complement
-    Sigma1_v = [0.3, 0.1]
-    Sigma2_v = [0.1, 0.2]
-    # scale
-    Sigma1_scale = 5e-1
-    Sigma2_scale = 3e-1
-    # regularization
-    Sigma1_regularization = np.eye(param.nbVarX) * 5e-3
-    Sigma2_regularization = np.eye(param.nbVarX) * 1e-2
-    # GMM Gaussian Mixture Model
-
-    # Gaussian centers
-    Mu = np.zeros((param.nbVarX, param.nbGaussian))
-    Mu[:, 0] = np.array(Mu1)
-    Mu[:, 1] = np.array(Mu2)
-    # covariance matrices
-    Sigma = np.zeros((param.nbVarX, param.nbVarX, param.nbGaussian))
-    # construct the covariance matrix using the outer product
-    Sigma[:, :, 0] = (
-        np.vstack(Sigma1_v) @ np.vstack(Sigma1_v).T * Sigma1_scale
-        + Sigma1_regularization
-    )
-    Sigma[:, :, 1] = (
-        np.vstack(Sigma2_v) @ np.vstack(Sigma2_v).T * Sigma2_scale
-        + Sigma2_regularization
-    )
-    # mixing. coefficients Priors (summing to one)
-    Alpha = (
-        np.ones(param.nbGaussian) / param.nbGaussian
-    )
-    return Mu, Sigma, Alpha
-
-def get_fixed_GMM(param):
-    """
-    Same GMM as in ergodic_control_SMC.py
-    """
-    # Gaussian centers
-    Mu1 = [0.5, 0.7]
-    Mu2 = [0.6, 0.3]
-    # Gaussian covariances
-    # direction vectors for constructing the covariance matrix using
-    # outer product of a vector with itself then the principal direction
-    # of covariance matrix becomes the given vector and its orthogonal
-    # complement
-    Sigma1_v = [0.3, 0.1]
-    Sigma2_v = [0.1, 0.2]
-
-    Sigma1_scale = 5e-1
-    Sigma2_scale = 3e-1
-
-    Sigma1_regularization = np.eye(param.nbVarX) * 5e-3
-    Sigma2_regularization = np.eye(param.nbVarX) * 1e-2
-
-    # GMM Gaussian Mixture Model
-    Mu = np.zeros((param.nbVarX, param.nbGaussian))
-    Mu[:, 0] = np.array(Mu1)
-    Mu[:, 1] = np.array(Mu2)
-    # covariance matrices
-    Sigma = np.zeros((param.nbVarX, param.nbVarX, param.nbGaussian))
-    # construct the covariance matrix using the outer product
-    Sigma[:, :, 0] = (
-        np.vstack(Sigma1_v) @ np.vstack(Sigma1_v).T * Sigma1_scale
-        + Sigma1_regularization
-    )
-    Sigma[:, :, 1] = (
-        np.vstack(Sigma2_v) @ np.vstack(Sigma2_v).T * Sigma2_scale
-        + Sigma2_regularization
-    )
-    # mixing coefficients priors (summing to one)
-    Alpha = np.ones(param.nbGaussian) / param.nbGaussian
-    return Mu, Sigma, Alpha
-
 # Parameters
 # ===============================
 param = lambda: None # Lazy way to define an empty class in python
-param.nbDataPoints = 200
-param.min_kernel_val = 1e-10  # upper bound on the minimum value of the kernel
+param.nbDataPoints = 500
+param.min_kernel_val = 1e-08 # upper bound on the minimum value of the kernel
 param.diffusion = 1  # increases global behavior
-param.source_strength = 10 # increases local behavior
+param.source_strength = 1 # increases local behavior
 param.agent_radius = 5  # changes the effect of the agent on the coverage
 param.max_dx = 1 # maximum velocity of the agent
 param.max_ddx = 0.1 # maximum acceleration of the agent
@@ -352,9 +239,15 @@ param.cooling_radius = 10  # changes the effect of the agent on local cooling (c
 param.local_cooling = 10  # for multi agent collision avoidance
 param.dx = 1
 
+
 param.nbVarX = 2  # dimension of the space
-param.nbResX = 200 # number of grid cells in x direction
-param.nbResY = 200  # number of grid cells in y direction
+# Alternatively load a image containing some wanted distribution
+# Load a grayscale image
+image_path = "data/plots/heatmap.png"
+image = Image.open(image_path).convert("L")
+image = image.transpose(Image.FLIP_TOP_BOTTOM)  # Flip the image vertically
+G = np.array(image) / 255.0  # Normalize pixel values to [0, 1]
+param.nbResX, param.nbResY = G.shape
 
 param.nbGaussian = 2
 
@@ -365,35 +258,18 @@ param.xlim = [0, 1]
 param.L = (param.xlim[1] - param.xlim[0]) * 2  # Size of [-xlim(2),xlim(2)]
 param.omega = 2 * np.pi / param.L
 
-param.nbRes = param.nbResX  # resolution of discretization
-
 param.alpha = np.array([1, 1]) * param.diffusion
-
-G = np.zeros((param.nbResX, param.nbResY))
 
 # Initialize heat equation related fields
 # ===============================
 # precompute everything we can before entering the loop
 coverage_arr = np.zeros((param.nbResX, param.nbResY, param.nbDataPoints))
 heat_arr = np.zeros((param.nbResX, param.nbResY, param.nbDataPoints))
-local_arr = np.zeros((param.nbResX, param.nbResY, param.nbDataPoints))
-goal_arr = np.zeros((param.nbResX, param.nbResY, param.nbDataPoints))
 
-param.height, param.width = G.shape
-
-param.area = param.dx * param.width * param.dx * param.height
-
-# Alternatively load a image containing some wanted distribution
-# Load a grayscale image
-image_path = "data/plots/heatmap.png"
-image = Image.open(image_path).convert("L")
-image = image.transpose(Image.FLIP_TOP_BOTTOM)  # Flip the image vertically
-image = image.resize((param.nbResX, param.nbResY))  # Resize to match the grid resolution
-G = np.array(image) / 255.0  # Normalize pixel values to [0, 1]
+param.area = param.dx * param.nbResX * param.dx * param.nbResY
 
 goal_density = normalize_mat(G)
-
-coverage_density = np.zeros((param.height, param.width))
+coverage_density = np.zeros(G.shape)
 heat = np.array(goal_density)
 
 max_diffusion = np.max(param.alpha)
@@ -413,10 +289,7 @@ for i in range(param.nbAgents):
     flat_G /= flat_G.sum()  # Normalize to create a probability distribution
     indices = np.arange(flat_G.size)
     chosen_index = np.random.choice(indices, p=flat_G)
-    x0 = np.unravel_index(chosen_index, G.shape)
-    # initial position of the agent
-    # x0 = np.random.uniform(0, param.nbResX, 2)
-    # x0 = np.array([10,30]) # if single agent same ic as SMC example
+    x0 = np.unravel_index(chosen_index, (param.nbResY, param.nbResX))
     agent = SecondOrderAgent(x=x0, nbDataPoints=param.nbDataPoints,max_dx=param.max_dx,max_ddx=param.max_ddx)
     # agent = FirstOrderAgent(x=x, dim_t=cfg.timesteps)
     rgb = np.random.uniform(0, 1, 3)
@@ -429,7 +302,7 @@ for i in range(param.nbAgents):
 for t in range(param.nbDataPoints):
     # cooling of all the agents for a single timestep
     # this is used for collision avoidance bw/ agents
-    local_cooling = np.zeros((param.height, param.width))
+    local_cooling = np.zeros(G.shape)
     for agent in agents:
         # find agent pos on the grid as integer indices
         p = agent.x
@@ -439,14 +312,15 @@ for t in range(param.nbDataPoints):
         # each agent has a kernel around it,
         # clamp the kernel by the grid boundaries
         row_indices, row_start_kernel, num_kernel_rows = clamp_kernel_1d(
-            row, 0, param.height, param.kernel_size
+            row, 0, param.nbResX, param.kernel_size
         )
         col_indices, col_start_kernel, num_kernel_cols = clamp_kernel_1d(
-            col, 0, param.width, param.kernel_size
+            col, 0, param.nbResY, param.kernel_size
         )
 
         # add the kernel to the coverage density
         # effect of the agent on the coverage density
+        # Precompute the coverage density for all agents
         coverage_density[row_indices, col_indices] += coverage_block[
             row_start_kernel : row_start_kernel + num_kernel_rows,
             col_start_kernel : col_start_kernel + num_kernel_cols,
@@ -464,12 +338,10 @@ for t in range(param.nbDataPoints):
 
     # this is the part we introduce exploration problem to the Heat Equation
     diff = goal_density - coverage
-    sign = np.sign(diff)
     source = np.maximum(diff, 0) ** 2
     source = normalize_mat(source) * param.area
-
-    current_heat = np.zeros((param.height, param.width))
-
+    current_heat = np.zeros(G.shape)
+    
     # 2-D heat equation (Partial Differential Equation)
     # In 2-D we perform this second-order central for x and y.
     # Note that, delta_x = delta_y = h since we have a uniform grid.
@@ -479,11 +351,11 @@ for t in range(param.nbDataPoints):
     # that the derivative is zero at the boundary. This is equivalent
     # to having a zero flux boundary condition or perfect insulation.
     current_heat[1:-1, 1:-1] = param.dt * (
-        (
-            +param.alpha[0] * offset(heat, 1, 0)
-            + param.alpha[0] * offset(heat, -1, 0)
-            + param.alpha[1] * offset(heat, 0, 1)
-            + param.alpha[1] * offset(heat, 0, -1)
+        param.alpha[1] *(
+            + offset(heat, 1, 0)
+            + offset(heat, -1, 0)
+            +  offset(heat, 0, 1)
+            + offset(heat, 0, -1)
             - 4.0 * offset(heat, 0, 0)
         )
         / (param.dx * param.dx)
@@ -493,7 +365,7 @@ for t in range(param.nbDataPoints):
 
     # Clip the current heat to avoid overflow
     current_heat = np.clip(current_heat, -1e10, 1e10)
-    heat = current_heat.astype(np.float32)
+    heat = current_heat
 
     # Calculate the first derivatives mind the order x and y
     gradient_y, gradient_x = np.gradient(heat, 1, 1)
@@ -517,14 +389,8 @@ fig, ax = plt.subplots(1, 3, figsize=(16, 8))
 ax[0].set_title("Agent trajectory and desired GMM")
 # Required for plotting discretized GMM
 xlim_min = 0
-xlim_max = param.nbResX
-xm1d = np.linspace(xlim_min, xlim_max, param.nbResX)  # Spatial range
-xm = np.zeros((param.nbGaussian, param.nbResX, param.nbResY))
-xm[0, :, :], xm[1, :, :] = np.meshgrid(xm1d, xm1d)
-X = np.squeeze(xm[0, :, :])
-Y = np.squeeze(xm[1, :, :])
 
-ax[0].contourf(X, Y, G, cmap="gray_r") # plot discrete GMM
+ax[0].contourf(G, cmap="gray_r") # plot discrete GMM
 # Plot agent trajectories
 for agent in agents:
     ax[0].plot(
@@ -542,17 +408,17 @@ ax[1].set_title("Exploration goal (heat source), explored regions at time t")
 arr = goal_density - coverage_density
 arr_pos = np.where(arr > 0, arr, 0) 
 arr_neg = np.where(arr < 0, -arr, 0)
-ax[1].contourf(X, Y, arr_pos,cmap='gray_r')
+ax[1].contourf( arr_pos,cmap='gray_r')
 # Plot agent trajectories
 for agent in agents:
-    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=10, color=agent.color,label="agent footprint") # sensor footprint
+    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=param.agent_radius*2, color=agent.color,label="agent footprint") # sensor footprint
     ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black",label='agent path') # trajectory line
 ax[1].legend(loc="upper left")
 ax[1].set_aspect("equal", "box")
 ax[1].legend().set_visible(False)
 ax[2].set_title("Gradient of the potential field")
 gradient_y, gradient_x = np.gradient(heat_arr[..., -1])
-ax[2].quiver(X, Y, gradient_x, gradient_y,scale= 200,units='xy') # Scales the length of the arrow inversely
+ax[2].quiver(gradient_x, gradient_y,scale=50,units='xy') # Scales the length of the arrow inversely
 # ax[2].quiver(X, Y, gradient_x, gradient_y)
 
 # Plot agent trajectories
