@@ -71,6 +71,7 @@ def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environmen
     coordinates = data["features"][0]["geometry"]["coordinates"][0]
     query_region = shapely.Polygon(coordinates)
     # Create the shapely Polygon object
+    log.info("Query region bounds: %s", query_region.bounds)
     polygon = GeoPolygon(query_region).set_crs("EPSG:2197")
 
     wetland = query_features(
@@ -107,8 +108,8 @@ def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environmen
     # Determine the bounds of the polygon
     sample_distance = 1
     minx, miny, maxx, maxy = polygon.geometry.bounds
+    # Pretty print the polygon bounds
 
-    # Define the number of bins for the heatmap
     meter_per_bin = 3
     num_bins_x = int((maxx - minx) * 1/meter_per_bin)
     num_bins_y = int((maxy - miny) * 1/meter_per_bin)
@@ -214,11 +215,11 @@ def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environmen
             # Set the grayscale channel based on the matrix values
             greyscale_with_alpha[..., 0] = temp_heatmap*255  # Greyscale (intensity) values
             # Set the alpha channel: 255 where matrix > 0, otherwise 0 (transparent)
-            greyscale_with_alpha[..., 1] = np.where(temp_heatmap > 0.01, 255, 0)
+            greyscale_with_alpha[..., 1] = np.where(temp_heatmap > -1, 255, 0)
             
             # Convert to a greyscale image with alpha
             img = Image.fromarray(greyscale_with_alpha, mode='LA')
-            img.save("heatmap.png")
+            img.save("data/plots/heatmap.png")
             print("Heatmap saved as heatmap.png")
 
         save_button.on_clicked(save)
@@ -232,7 +233,7 @@ def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environmen
     ax.set_axis_off()
 
     if export:
-        plt.savefig("plot.png",bbox_inches='tight')
+        plt.savefig("data/plots/plot.png",bbox_inches='tight')
     plt.show()
     
 

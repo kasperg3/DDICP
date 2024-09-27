@@ -336,82 +336,20 @@ def get_fixed_GMM(param):
     Alpha = np.ones(param.nbGaussian) / param.nbGaussian
     return Mu, Sigma, Alpha
 
-
-def discrete_gmm(param):
-    """
-    Same GMM as in ergodic_control_SMC.py
-    """
-    
-    
-    
-    # Discretize given GMM using Fourier basis functions
-    rg = np.arange(0, param.nbFct, dtype=float)
-    KX = np.zeros((param.nbVarX, param.nbFct, param.nbFct))
-    KX[0, :, :], KX[1, :, :] = np.meshgrid(rg, rg)
-    # Mind the flatten() !!!
-
-    # Explicit description of w_hat by exploiting the Fourier transform
-    # properties of Gaussians (optimized version by exploiting symmetries)
-    op = hadamard_matrix(2 ** (param.nbVarX - 1))
-    op = np.array(op)
-    # check the reshaping dimension !!!
-    kk = KX.reshape(param.nbVarX, param.nbFct**2) * param.omega
-
-    # Compute fourier basis function weights w_hat for the target distribution given by GMM
-    w_hat = np.zeros(param.nbFct**param.nbVarX)
-    for j in range(param.nbGaussian):
-        for n in range(op.shape[1]):
-            MuTmp = np.diag(op[:, n]) @ param.Mu[:, j]
-            SigmaTmp = np.diag(op[:, n]) @ param.Sigma[:, :, j] @ np.diag(op[:, n]).T
-            cos_term = np.cos(kk.T @ MuTmp)
-            exp_term = np.exp(np.diag(-0.5 * kk.T @ SigmaTmp @ kk))
-            # Eq.(22) where D=1
-            w_hat = w_hat + param.Alpha[j] * cos_term * exp_term
-    w_hat = w_hat / (param.L**param.nbVarX) / (op.shape[1])
-
-    # Fourier basis functions (for a discretized map)
-    xm1d = np.linspace(param.xlim[0], param.xlim[1], param.nbRes)  # Spatial range
-    xm = np.zeros((param.nbGaussian, param.nbRes, param.nbRes))
-    xm[0, :, :], xm[1, :, :] = np.meshgrid(xm1d, xm1d)
-    # Mind the flatten() !!!
-    ang1 = (
-        KX[0, :, :].flatten().T[:, np.newaxis]
-        @ xm[0, :, :].flatten()[:, np.newaxis].T
-        * param.omega
-    )
-    ang2 = (
-        KX[1, :, :].flatten().T[:, np.newaxis]
-        @ xm[1, :, :].flatten()[:, np.newaxis].T
-        * param.omega
-    )
-    phim = np.cos(ang1) * np.cos(ang2) * 2 ** (param.nbVarX)
-    # Some weird +1, -1 due to 0 index !!!
-    xx, yy = np.meshgrid(np.arange(1, param.nbFct + 1), np.arange(1, param.nbFct + 1))
-    hk = np.concatenate(([1], 2 * np.ones(param.nbFct)))
-    HK = hk[xx.flatten() - 1] * hk[yy.flatten() - 1]
-    phim = phim * np.tile(HK, (param.nbRes**param.nbVarX, 1)).T
-
-    # Desired spatial distribution
-    g = w_hat.T @ phim
-    return g
-
-
 # Parameters
 # ===============================
 param = lambda: None # Lazy way to define an empty class in python
 param.nbDataPoints = 200
-param.min_kernel_val = 1e-8  # upper bound on the minimum value of the kernel
+param.min_kernel_val = 1e-10  # upper bound on the minimum value of the kernel
 param.diffusion = 1  # increases global behavior
-param.source_strength = 1  # increases local behavior
-param.obstacle_strength = 0  # increases local behavior
-param.agent_radius = 10  # changes the effect of the agent on the coverage
+param.source_strength = 10 # increases local behavior
+param.agent_radius = 5  # changes the effect of the agent on the coverage
 param.max_dx = 1 # maximum velocity of the agent
 param.max_ddx = 0.1 # maximum acceleration of the agent
-param.cooling_radius = (
-    15  # changes the effect of the agent on local cooling (collision avoidance)
-)
+
 param.nbAgents = 10
-param.local_cooling = 100  # for multi agent collision avoidance
+param.cooling_radius = 10  # changes the effect of the agent on local cooling (collision avoidance)
+param.local_cooling = 10  # for multi agent collision avoidance
 param.dx = 1
 
 param.nbVarX = 2  # dimension of the space
@@ -433,14 +371,6 @@ param.alpha = np.array([1, 1]) * param.diffusion
 
 G = np.zeros((param.nbResX, param.nbResY))
 
-# Note this part is needed to have exact same target distribution as in ergodic_control_SMC.py
-# param.Mu, param.Sigma, param.Alpha = get_fixed_GMM(param)
-param.Mu, param.Sigma, param.Alpha = get_GMM(param)
-g = discrete_gmm(param)
-G = np.reshape(g, [param.nbResX, param.nbResY])
-G = np.abs(G)  # there is no negative heat
-
-
 # Initialize heat equation related fields
 # ===============================
 # precompute everything we can before entering the loop
@@ -455,7 +385,7 @@ param.area = param.dx * param.width * param.dx * param.height
 
 # Alternatively load a image containing some wanted distribution
 # Load a grayscale image
-image_path = "heatmap.png"
+image_path = "data/plots/heatmap.png"
 image = Image.open(image_path).convert("L")
 image = image.transpose(Image.FLIP_TOP_BOTTOM)  # Flip the image vertically
 image = image.resize((param.nbResX, param.nbResY))  # Resize to match the grid resolution
@@ -524,11 +454,10 @@ for t in range(param.nbDataPoints):
 
         # local cooling is used for collision avoidance between the agents
         # so it can be disabled for speed if not required
-        if param.local_cooling:
-            local_cooling[row_indices, col_indices] += cooling_block[
-                row_start_kernel : row_start_kernel + num_kernel_rows,
-                col_start_kernel : col_start_kernel + num_kernel_cols,
-            ]
+        local_cooling[row_indices, col_indices] += cooling_block[
+            row_start_kernel : row_start_kernel + num_kernel_rows,
+            col_start_kernel : col_start_kernel + num_kernel_cols,
+        ]
         local_cooling = normalize_mat(local_cooling)
 
     coverage = normalize_mat(coverage_density)
@@ -562,6 +491,8 @@ for t in range(param.nbDataPoints):
         - param.local_cooling * offset(local_cooling, 0, 0)
     ) + offset(heat, 0, 0)
 
+    # Clip the current heat to avoid overflow
+    current_heat = np.clip(current_heat, -1e10, 1e10)
     heat = current_heat.astype(np.float32)
 
     # Calculate the first derivatives mind the order x and y
@@ -608,7 +539,7 @@ for agent in agents:
 ax[0].set_aspect("equal", "box")
 
 ax[1].set_title("Exploration goal (heat source), explored regions at time t")
-arr = goal_density - coverage_arr[..., -1]
+arr = goal_density - coverage_density
 arr_pos = np.where(arr > 0, arr, 0) 
 arr_neg = np.where(arr < 0, -arr, 0)
 ax[1].contourf(X, Y, arr_pos,cmap='gray_r')
@@ -618,10 +549,10 @@ for agent in agents:
     ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black",label='agent path') # trajectory line
 ax[1].legend(loc="upper left")
 ax[1].set_aspect("equal", "box")
-
+ax[1].legend().set_visible(False)
 ax[2].set_title("Gradient of the potential field")
 gradient_y, gradient_x = np.gradient(heat_arr[..., -1])
-ax[2].quiver(X, Y, gradient_x, gradient_y,scale= 15,units='xy') # Scales the length of the arrow inversely
+ax[2].quiver(X, Y, gradient_x, gradient_y,scale= 200,units='xy') # Scales the length of the arrow inversely
 # ax[2].quiver(X, Y, gradient_x, gradient_y)
 
 # Plot agent trajectories

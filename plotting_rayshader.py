@@ -12,11 +12,13 @@ import tempfile
 from shapely.geometry import Point, Polygon
 from shapely import wkt
 rpy2.robjects.numpy2ri.activate()
-zip_url = 'https://tylermw.com/data/dem_01.tif.zip'
-response = requests.get(zip_url)
-with zipfile.ZipFile(BytesIO(response.content)) as thezip:
-    thezip.extractall('/home/kang/workspace/EnvironmentalModelling/')
-zip_url = '/home/kang/workspace/EnvironmentalModelling/dem_01.tif'
+# zip_url = 'https://tylermw.com/data/dem_01.tif.zip'
+# response = requests.get(zip_url)
+# with zipfile.ZipFile(BytesIO(response.content)) as thezip:
+#     thezip.extractall('/home/kang/workspace/EnvironmentalModelling/')
+# zip_url = 'data/raster/HillyTerrainNature.geotiff'
+# zip_url = 'data/raster/FlatTerrainNature.geotiff'
+zip_url = 'data/raster/WaterTerrainNature.geotiff'
 with rio.open(zip_url) as f:
     z = f.read(1)
     
@@ -49,7 +51,7 @@ with rio.open(zip_url) as f:
     print(polygon)
     ''')
     
-def rayshade(z, img_path=None, zscale=10, fov=0, theta=135, zoom=0.75, phi=45, windowsize=(1000, 1000)):
+def rayshade(z, img_path=None, zscale=0.8, fov=0, theta=135, zoom=0.75, phi=45, windowsize=(1000, 1000)):
     
     # Output path.
     if not img_path:
@@ -76,11 +78,13 @@ def rayshade(z, img_path=None, zscale=10, fov=0, theta=135, zoom=0.75, phi=45, w
     # Do the render.
     ro.r('''
         elmat %>%
-          sphere_shade(texture = "desert") %>%
+          sphere_shade(texture = "imhof1") %>%
           add_water(detect_water(elmat), color = "desert") %>%
           add_shadow(ray_shade(elmat, zscale = zscale), 0.5) %>%
           add_shadow(ambient_shade(elmat), 0) %>%
-          plot_3d(elmat, zscale = zscale, fov = fov, theta = theta, zoom = zoom, phi = phi, windowsize = windowsize)
+          plot_3d(elmat, zscale = zscale, fov = fov, theta = theta, zoom = zoom, phi = phi, windowsize = windowsize, 
+          water = TRUE, waterdepth = 0, wateralpha = 0.5, watercolor = "lightblue",
+          waterlinecolor = "white", waterlinealpha = 0.5)
     ''')
     
     # Return path.
