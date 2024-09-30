@@ -14,7 +14,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 # Set random seed for reproducibility
-np.random.seed(21)
+np.random.seed(1)
 
 
 # Helper class
@@ -80,7 +80,7 @@ def rbf(mean, x, eps):
 
 
 def normalize_mat(mat):
-    return mat / (np.sum(mat) + 1e-10)
+    return mat / (np.sum(mat) + 1e-12)
 
 
 def calculate_gradient(agent, gradient_x, gradient_y):
@@ -92,7 +92,6 @@ def calculate_gradient(agent, gradient_x, gradient_y):
     adjusted_position = agent.x / param.dx
     # note x axis corresponds to col and y axis corresponds to row
     col, row = adjusted_position.astype(int)
-
 
     gradient = np.zeros(2)
     # if agent is inside the grid, interpolate the gradient for agent position
@@ -226,10 +225,10 @@ def bilinear_interpolation(grid, pos):
 # Parameters
 # ===============================
 param = lambda: None # Lazy way to define an empty class in python
-param.nbDataPoints = 500
+param.nbDataPoints = 200
 param.min_kernel_val = 1e-08 # upper bound on the minimum value of the kernel
 param.diffusion = 1  # increases global behavior
-param.source_strength = 1 # increases local behavior
+param.source_strength = 10 # increases local behavior
 param.agent_radius = 5  # changes the effect of the agent on the coverage
 param.max_dx = 1 # maximum velocity of the agent
 param.max_ddx = 0.1 # maximum acceleration of the agent
@@ -239,26 +238,24 @@ param.cooling_radius = 10  # changes the effect of the agent on local cooling (c
 param.local_cooling = 10  # for multi agent collision avoidance
 param.dx = 1
 
-
-param.nbVarX = 2  # dimension of the space
 # Alternatively load a image containing some wanted distribution
 # Load a grayscale image
 image_path = "data/plots/heatmap.png"
 image = Image.open(image_path).convert("L")
 image = image.transpose(Image.FLIP_TOP_BOTTOM)  # Flip the image vertically
-G = np.array(image) / 255.0  # Normalize pixel values to [0, 1]
+# image = image.resize((200, 200))  # Resize the image to 100x100 pixels
+G = normalize_mat(image)
 param.nbResX, param.nbResY = G.shape
 
 param.nbGaussian = 2
 
-param.nbFct = 10  # Number of basis functions along x and y
 # Domain limit for each dimension (considered to be 1
 # for each dimension in this implementation)
 param.xlim = [0, 1]
 param.L = (param.xlim[1] - param.xlim[0]) * 2  # Size of [-xlim(2),xlim(2)]
 param.omega = 2 * np.pi / param.L
 
-param.alpha = np.array([1, 1]) * param.diffusion
+param.alpha = param.diffusion
 
 # Initialize heat equation related fields
 # ===============================
@@ -272,21 +269,18 @@ goal_density = normalize_mat(G)
 coverage_density = np.zeros(G.shape)
 heat = np.array(goal_density)
 
-max_diffusion = np.max(param.alpha)
 param.dt = min(
-    1.0, (param.dx * param.dx) / (4.0 * max_diffusion)
+    1.0, (param.dx * param.dx) / (4.0 * param.alpha)
 )  # for the stability of implicit integration of Heat Equation
 coverage_block = agent_block(param.min_kernel_val, param.agent_radius)
-cooling_block = agent_block(param.min_kernel_val, param.cooling_radius)
+cooling_block = agent_block(param.min_kernel_val, param.agent_radius)
 param.kernel_size = coverage_block.shape[0]
-
 # Initialize agents
 # ===============================
 agents = []
 for i in range(param.nbAgents):
     # Sample initial position from the discrete distribution in G
-    flat_G = G.flatten()
-    flat_G /= flat_G.sum()  # Normalize to create a probability distribution
+    flat_G = G.T.flatten()
     indices = np.arange(flat_G.size)
     chosen_index = np.random.choice(indices, p=flat_G)
     x0 = np.unravel_index(chosen_index, (param.nbResY, param.nbResX))
@@ -350,18 +344,17 @@ for t in range(param.nbDataPoints):
     # At boundary we have Neumann boundary conditions which assumes
     # that the derivative is zero at the boundary. This is equivalent
     # to having a zero flux boundary condition or perfect insulation.
-    current_heat[1:-1, 1:-1] = param.dt * (
-        param.alpha[1] *(
-            + offset(heat, 1, 0)
-            + offset(heat, -1, 0)
-            +  offset(heat, 0, 1)
-            + offset(heat, 0, -1)
-            - 4.0 * offset(heat, 0, 0)
-        )
-        / (param.dx * param.dx)
-        + param.source_strength * offset(source, 0, 0)
-        - param.local_cooling * offset(local_cooling, 0, 0)
-    ) + offset(heat, 0, 0)
+    current_heat[1:-1, 1:-1] = (
+        param.dt * (
+            param.alpha * (
+                offset(heat, 1, 0) + offset(heat, -1, 0) +
+                offset(heat, 0, 1) + offset(heat, 0, -1) -
+                4.0 * offset(heat, 0, 0)
+            ) / (param.dx * param.dx) +
+            param.source_strength * offset(source, 0, 0) -
+            param.local_cooling * offset(local_cooling, 0, 0)
+        ) + offset(heat, 0, 0)
+    )
 
     # Clip the current heat to avoid overflow
     current_heat = np.clip(current_heat, -1e10, 1e10)
@@ -390,7 +383,7 @@ ax[0].set_title("Agent trajectory and desired GMM")
 # Required for plotting discretized GMM
 xlim_min = 0
 
-ax[0].contourf(G, cmap="gray_r") # plot discrete GMM
+ax[0].contourf(goal_density, cmap="gray_r", levels=20) # plot discrete GMM
 # Plot agent trajectories
 for agent in agents:
     ax[0].plot(
@@ -408,10 +401,10 @@ ax[1].set_title("Exploration goal (heat source), explored regions at time t")
 arr = goal_density - coverage_density
 arr_pos = np.where(arr > 0, arr, 0) 
 arr_neg = np.where(arr < 0, -arr, 0)
-ax[1].contourf( arr_pos,cmap='gray_r')
+ax[1].contourf(arr_pos,cmap='gray_r', levels=20)
 # Plot agent trajectories
 for agent in agents:
-    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=param.agent_radius*2, color=agent.color,label="agent footprint") # sensor footprint
+    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=param.agent_radius*2, color=agent.color, label="agent footprint", solid_capstyle='round') # sensor footprint
     ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black",label='agent path') # trajectory line
 ax[1].legend(loc="upper left")
 ax[1].set_aspect("equal", "box")
@@ -419,14 +412,11 @@ ax[1].legend().set_visible(False)
 ax[2].set_title("Gradient of the potential field")
 gradient_y, gradient_x = np.gradient(heat_arr[..., -1])
 ax[2].quiver(gradient_x, gradient_y,scale=50,units='xy') # Scales the length of the arrow inversely
-# ax[2].quiver(X, Y, gradient_x, gradient_y)
 
 # Plot agent trajectories
 for agent in agents:
     ax[2].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black") # trajectory line
-    ax[2].plot(
-        agent.x_arr[0, 0], agent.x_arr[0, 1], marker=".", color="black", markersize=10
-    )
+    ax[2].plot(agent.x_arr[0, 0], agent.x_arr[0, 1], marker=".", color="black", markersize=10)
 ax[2].set_aspect("equal", "box")
 
 plt.show()
