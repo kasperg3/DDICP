@@ -176,6 +176,8 @@ def agent_block(min_val, agent_radius):
     # we hope this value is close to zero 
     print(f"Minimum element of the block: {np.min(block)}" +
           " values smaller than this assumed as zero")
+    print(f"Maximum element of the block: {np.max(block)}")
+    print(f"Kernel size: {block.shape}")
     return block
 
 
@@ -229,11 +231,11 @@ param.nbDataPoints = 200
 param.min_kernel_val = 1e-08 # upper bound on the minimum value of the kernel
 param.diffusion = 1  # increases global behavior
 param.source_strength = 10 # increases local behavior
-param.agent_radius = 5  # changes the effect of the agent on the coverage
+param.agent_radius = 20  # changes the effect of the agent on the coverage
 param.max_dx = 1 # maximum velocity of the agent
 param.max_ddx = 0.1 # maximum acceleration of the agent
 
-param.nbAgents = 10
+param.nbAgents = 30
 param.cooling_radius = 10  # changes the effect of the agent on local cooling (collision avoidance)
 param.local_cooling = 10  # for multi agent collision avoidance
 param.dx = 1
@@ -265,7 +267,7 @@ heat_arr = np.zeros((param.nbResX, param.nbResY, param.nbDataPoints))
 
 param.area = param.dx * param.nbResX * param.dx * param.nbResY
 
-goal_density = normalize_mat(G)
+goal_density = G
 coverage_density = np.zeros(G.shape)
 heat = np.array(goal_density)
 
@@ -273,7 +275,7 @@ param.dt = min(
     1.0, (param.dx * param.dx) / (4.0 * param.alpha)
 )  # for the stability of implicit integration of Heat Equation
 coverage_block = agent_block(param.min_kernel_val, param.agent_radius)
-cooling_block = agent_block(param.min_kernel_val, param.agent_radius)
+cooling_block = agent_block(param.min_kernel_val, param.cooling_radius)
 param.kernel_size = coverage_block.shape[0]
 # Initialize agents
 # ===============================
@@ -285,7 +287,6 @@ for i in range(param.nbAgents):
     chosen_index = np.random.choice(indices, p=flat_G)
     x0 = np.unravel_index(chosen_index, (param.nbResY, param.nbResX))
     agent = SecondOrderAgent(x=x0, nbDataPoints=param.nbDataPoints,max_dx=param.max_dx,max_ddx=param.max_ddx)
-    # agent = FirstOrderAgent(x=x, dim_t=cfg.timesteps)
     rgb = np.random.uniform(0, 1, 3)
     agent.color = np.concatenate((rgb, [1.0]))  # append alpha value
     agents.append(agent)
@@ -322,12 +323,13 @@ for t in range(param.nbDataPoints):
 
         # local cooling is used for collision avoidance between the agents
         # so it can be disabled for speed if not required
-        local_cooling[row_indices, col_indices] += cooling_block[
-            row_start_kernel : row_start_kernel + num_kernel_rows,
-            col_start_kernel : col_start_kernel + num_kernel_cols,
-        ]
-        local_cooling = normalize_mat(local_cooling)
-
+        # local_cooling[row_indices, col_indices] += cooling_block[
+        #     row_start_kernel : row_start_kernel + num_kernel_rows,
+        #     col_start_kernel : col_start_kernel + num_kernel_cols,
+        # ]
+        # local_cooling = normalize_mat(local_cooling)
+    # Clip the coverage density to avoid overflow
+    # coverage_density = np.clip(coverage_density, 0, 50)
     coverage = normalize_mat(coverage_density)
 
     # this is the part we introduce exploration problem to the Heat Equation
@@ -346,18 +348,17 @@ for t in range(param.nbDataPoints):
     # to having a zero flux boundary condition or perfect insulation.
     current_heat[1:-1, 1:-1] = (
         param.dt * (
-            param.alpha * (
-                offset(heat, 1, 0) + offset(heat, -1, 0) +
-                offset(heat, 0, 1) + offset(heat, 0, -1) -
+            (
+                param.alpha *offset(heat, 1, 0) + param.alpha *offset(heat, -1, 0) +
+                param.alpha *offset(heat, 0, 1) + param.alpha *offset(heat, 0, -1) ) -
                 4.0 * offset(heat, 0, 0)
-            ) / (param.dx * param.dx) +
+             / (param.dx * param.dx)) +
             param.source_strength * offset(source, 0, 0) -
             param.local_cooling * offset(local_cooling, 0, 0)
         ) + offset(heat, 0, 0)
-    )
 
     # Clip the current heat to avoid overflow
-    current_heat = np.clip(current_heat, -1e10, 1e10)
+    # current_heat = np.clip(current_heat, -1e10, 1e10) 
     heat = current_heat
 
     # Calculate the first derivatives mind the order x and y
@@ -375,6 +376,56 @@ for t in range(param.nbDataPoints):
     coverage_arr[..., t] = coverage
     heat_arr[..., t] = heat
 
+# Calculate the ergodic metric
+def calculate_ergodic_metric(coverage_density, goal_density, nbResX, nbResY):
+    """
+    Calculate the ergodic metric between the coverage density and the goal density.
+    """
+    # Fourier coefficients of the goal density
+    goal_coeffs = np.fft.fft2(goal_density)
+    # Fourier coefficients of the coverage density
+    coverage_coeffs = np.fft.fft2(coverage_density)
+    # Print the Fourier coefficients
+    # print("Size of Goal Fourier Coefficients:", goal_coeffs.shape)
+    # print("Size of Coverage Fourier Coefficients:", coverage_coeffs.shape)
+    # Calculate the ergodic metric
+    ergodic_metric = 0
+    for kx in range(nbResX):
+        for ky in range(nbResY):
+            # Calculate the squared difference of the Fourier coefficients
+            diff = np.abs(goal_coeffs[kx, ky] - coverage_coeffs[kx, ky]) ** 2
+            # Weight the difference by the squared norm of the wave number
+            weight = (kx ** 2 + ky ** 2) ** (-1.5) if (kx != 0 or ky != 0) else 1
+            ergodic_metric += weight * diff
+    return ergodic_metric
+
+# Compare the coverage_density produced by each agent trajectory with the goal density
+for i, agent in enumerate(agents):
+    agent_coverage_density = np.zeros(G.shape)
+    for t in range(param.nbDataPoints):
+        p = agent.x_arr[t]
+        adjusted_position = p / param.dx
+        col, row = adjusted_position.astype(int)
+
+        row_indices, row_start_kernel, num_kernel_rows = clamp_kernel_1d(
+            row, 0, param.nbResX, param.kernel_size
+        )
+        col_indices, col_start_kernel, num_kernel_cols = clamp_kernel_1d(
+            col, 0, param.nbResY, param.kernel_size
+        )
+
+        agent_coverage_density[row_indices, col_indices] += coverage_block[
+            row_start_kernel : row_start_kernel + num_kernel_rows,
+            col_start_kernel : col_start_kernel + num_kernel_cols,
+        ]
+    agent_coverage_density = normalize_mat(agent_coverage_density)
+    agent_ergodic_metric = calculate_ergodic_metric(agent_coverage_density, goal_density, param.nbResX, param.nbResY)
+    print(f"Agent {i} ergodic metric: {agent_ergodic_metric}")
+
+# Calculate the ergodic metric for the actual coverage density
+ergodic_metric = calculate_ergodic_metric(goal_density, coverage_density, param.nbResX, param.nbResY)
+print(f"Ergodic Metric: {ergodic_metric}")
+
 # Plot
 # ===============================
 fig, ax = plt.subplots(1, 3, figsize=(16, 8))
@@ -383,7 +434,7 @@ ax[0].set_title("Agent trajectory and desired GMM")
 # Required for plotting discretized GMM
 xlim_min = 0
 
-ax[0].contourf(goal_density, cmap="gray_r", levels=20) # plot discrete GMM
+ax[0].contourf(goal_density, cmap="gray_r", levels=50) # plot discrete GMM
 # Plot agent trajectories
 for agent in agents:
     ax[0].plot(
@@ -401,17 +452,17 @@ ax[1].set_title("Exploration goal (heat source), explored regions at time t")
 arr = goal_density - coverage_density
 arr_pos = np.where(arr > 0, arr, 0) 
 arr_neg = np.where(arr < 0, -arr, 0)
-ax[1].contourf(arr_pos,cmap='gray_r', levels=20)
+ax[1].contourf(coverage_density,cmap='gray_r', levels=50)
 # Plot agent trajectories
-for agent in agents:
-    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=param.agent_radius*2, color=agent.color, label="agent footprint", solid_capstyle='round') # sensor footprint
-    ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black",label='agent path') # trajectory line
+# for agent in agents:
+    # ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linewidth=param.agent_radius*2, color=agent.color, label="agent footprint", solid_capstyle='round') # sensor footprint
+    # ax[1].plot(agent.x_arr[:, 0], agent.x_arr[:, 1], linestyle="--", color="black",label='agent path') # trajectory line
 ax[1].legend(loc="upper left")
 ax[1].set_aspect("equal", "box")
 ax[1].legend().set_visible(False)
 ax[2].set_title("Gradient of the potential field")
 gradient_y, gradient_x = np.gradient(heat_arr[..., -1])
-ax[2].quiver(gradient_x, gradient_y,scale=50,units='xy') # Scales the length of the arrow inversely
+ax[2].quiver(gradient_x, gradient_y,scale=20,units='xy') # Scales the length of the arrow inversely
 
 # Plot agent trajectories
 for agent in agents:

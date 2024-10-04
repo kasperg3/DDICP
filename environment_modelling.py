@@ -96,14 +96,14 @@ def interactive_plot(polygon_file,norm="clip", use_sliders=True, plot_environmen
         road_collection.extend(list(road.geoms))
     road_geom = GeoMultiTrajectory(road_collection).set_crs("EPSG:2197")
     
-    building_collection = []
-    buildings = query_features(
-        GeoPolygon(query_region),
-        {"building": True},
-    )
-    for feature in buildings.values():
-        building_collection.extend(list(feature.geoms))
-    building_geom = GeoMultiPolygon(building_collection).set_crs("EPSG:2197")
+    # building_collection = []
+    # buildings = query_features(
+    #     GeoPolygon(query_region),
+    #     {"building": True},
+    # )
+    # for feature in buildings.values():
+    #     building_collection.extend(list(feature.geoms))
+    # building_geom = GeoMultiPolygon(building_collection).set_crs("EPSG:2197")
     
     # Determine the bounds of the polygon
     sample_distance = 1
