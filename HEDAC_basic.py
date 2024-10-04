@@ -22,6 +22,9 @@ import datetime
 from scipy.fftpack import dct, idct
 import time
 import functools
+import numpy as np
+from PIL import Image
+import imageio
 
 # rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 ## for Palatino and other serif fonts use:
@@ -56,8 +59,8 @@ class HEDAC_basic():
         self.beta = 1e6
         self.gamma = 1.0
         self.kappa = 0.
-        self.nu = 0.01
-        self.va = None
+        self.nu = 0.001
+        self.va = None  # Gradient step size
         self.sigma_m = 0.01
         self.sigma_c = 0.01
         self.sigma_ac = 0.01
@@ -320,12 +323,12 @@ class HEDAC_basic():
                 if self.it % self.outputStep == 0:
                     self.plot_solution()
 
-            vax = intrp.interp2d(self.X, self.Y, self.ux, kind='linear')
-            vay = intrp.interp2d(self.X, self.Y, self.uy, kind='linear')
+            vax = intrp.RegularGridInterpolator((self.Y, self.X), self.ux, method='linear')
+            vay = intrp.RegularGridInterpolator((self.Y, self.X), self.uy, method='linear')
 
             for xa, ya in zip(self.XA, self.YA):
-                va_x = vax(xa[-1], ya[-1])[0]
-                va_y = vay(xa[-1], ya[-1])[0]
+                va_x = vax((ya[-1], xa[-1]))
+                va_y = vay((ya[-1], xa[-1]))
                 van = np.hypot(va_x, va_y)
                 if van < 1e-10:
                     va_x = xa[-1] - xa[-2]
@@ -452,7 +455,6 @@ class HEDAC_basic():
     def plot_solution(self):
 
         plt.figure(figsize=(20, 12))
-
         gs1 = gridspec.GridSpec(2, 3)
         gs1.update(left=0.02, right=0.98, wspace=0.17, hspace=0.1, top=0.97, bottom=0.05)
         ax1 = plt.subplot(gs1[0, 0])
@@ -546,31 +548,17 @@ class HEDAC_basic():
 
         plt.savefig(self.results_dir + '/it_%06d.png' % self.it)
         plt.close()
-
-        if self.sit % 1 == 0:
+        # Create a GIF from the saved figures
+        if self.it % 10 == 0:
             try:
-                print('Creating video ....')
-                cmd = f'ffmpeg -y -r 25 -i it_%06d.png -c:v libx264 -r 25 -pix_fmt yuv420p {self.method}_ergodic_coverage.mp4'
-                # print(os.getcwd() + '/' + self.results_dir)
-                p = subprocess.Popen(cmd.split(), cwd=os.getcwd() + '/' + self.results_dir,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                output, err = p.communicate()
-            except:
-                print('Calling ffmpeg for creating video failed')
-        """
-        fig = plt.figure(figsize=(10, 10))
-        ax = fig.gca(projection='3d')
-        X, Y = np.meshgrid(_x, _y)
+                print('Creating GIF ....')
+                image_files = sorted([f for f in os.listdir(self.results_dir) if f.startswith('it_') and f.endswith('.png')])
+                images = [imageio.imread(os.path.join(self.results_dir, file)) for file in image_files]
+                imageio.mimsave(os.path.join(self.results_dir, f'{self.method}_ergodic_coverage.gif'), images, duration=0.1)
+            except Exception as e:
+                print(f'Creating GIF failed: {e}')
+  
 
-        surf = ax.plot_surface(X, Y, _u, rstride=1, cstride=1, cmap=cm.coolwarm,
-            linewidth=0.1, antialiased=True)
-
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('u')
-        plt.savefig(results_dir + '/surf_%06d.png' % _sit)
-        plt.close()
-        """
 
     def save_fields(self):
 
@@ -669,9 +657,67 @@ def generate_divpowersource(power=1.0, eps=1.0e-3):
 
 
 
-if __name__ == "__main__":
+def raw_image_test():
     import numpy as np
     from PIL import Image
+
+    # Load the image
+    image_path = 'heatmap.png'
+    image = Image.open(image_path)
+    image = image.convert('L')
+    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+    image = np.array(image, dtype=np.float64)
+    image_height, image_width = image.shape[:2]
+            
+    test = HEDAC_basic()
+
+    test.method = 'hedac'
+    test.results_dir = 'experiments/hedac'
+    test.sigma_m = 1 # Envrionemtal variance, for smoothing environments
+    test.sigma_c = 2
+
+    # test.method = 'smc'
+    # test.results_dir = 'test_01/smc_full'
+    # test.sigma_m = 0.01
+    # test.sigma_c = 0.01
+
+    test.X = np.arange(image.shape[1])
+    test.Y = np.arange(image.shape[0])
+    test.T = np.arange(5001)
+
+    test.samples = image
+    test.alpha = 1.0
+    test.beta = 0.5
+    test.gamma = 0.1
+    test.va = 2 # Step size 
+    test.sigma_ac = 0.1
+    # test.kappa = 0.1
+    test.sourcefun = difsource
+    # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
+
+    test.outputStep = 2
+
+    # Normalize the image to create a probability distribution
+    prob_dist = image / np.sum(image)
+
+    # Flatten the probability distribution and create a list of coordinates
+    flat_prob_dist = prob_dist.flatten()
+    coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
+
+    # Sample agent locations based on the probability distribution
+    num_agents = 20
+    sampled_indices = np.random.choice(len(flat_prob_dist), size=num_agents, p=flat_prob_dist)
+    sampled_coordinates = [(coordinates[i][0], coordinates[i][1]) for i in sampled_indices]
+    # Assign the sampled coordinates to the agents
+    test.agents = sampled_coordinates
+
+    test.search()
+    
+    
+    # Convert the paths back to the values corresponding in the image
+    
+def scaled_test():
+    
 
     # Load the image
     image_path = 'heatmap.png'
@@ -736,7 +782,15 @@ if __name__ == "__main__":
     test.search()
     
     
+    
     # Convert the paths back to the values corresponding in the image
     
     
+
+    # Convert the paths back to the values corresponding in the image
     
+    
+
+
+if __name__ == "__main__":
+    raw_image_test()
