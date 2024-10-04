@@ -20,6 +20,8 @@ import matplotlib as mpl
 import subprocess
 import datetime
 from scipy.fftpack import dct, idct
+import time
+import functools
 
 # rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 ## for Palatino and other serif fonts use:
@@ -106,10 +108,19 @@ class HEDAC_basic():
             info.write(' ' * 15 + '%10.3f, %10.3f\n' % tuple(a))
 
         info.close()
-
+        
+    def timing_decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            end_time = time.time()
+            print(f"Function {func.__name__} took {end_time - start_time:.4f} seconds")
+            return result
+        return wrapper
+    
     def init(self):
         print('Load and precompute')
-
         """
         Delete and recreate resuluts directory
         """
@@ -130,9 +141,6 @@ class HEDAC_basic():
 
         self.Xmg, self.Ymg = np.meshgrid(self.X, self.Y)
 
-        # print self.dx
-        # print self.Xc
-
         """
         Probability initialization
         """
@@ -147,24 +155,6 @@ class HEDAC_basic():
             # Defined as file containing samples locations
             self.m = self.samples
 
-        elif isinstance(self.samples, basestring):
-            # Defined as file containing samples locations
-
-            XM, YM = np.loadtxt(self.samples, delimiter=',', unpack=True)
-            """
-            # scale and center
-            scale = 1.1 * np.max([(np.max(XM) - np.min(XM)), (np.max(YM) - np.min(YM))])
-            self.XM = (XM - np.min(XM)) / scale
-            self.YM = (YM - np.min(YM)) / scale
-            xc = 0.5 * (np.min(self.XM) + np.max(self.XM))
-            yc = 0.5 * (np.min(self.YM) + np.max(self.YM))
-            self.XM += (0.5 - xc)
-            self.YM += (0.5 - yc)
-            """
-            self.m, _, _ = np.histogram2d(self.YM, self.XM, bins=[self.Yc, self.Xc])
-
-        else:
-            raise Exception('Probability initialization failed!')
 
         self.m /= np.mean(self.m)
 
@@ -225,11 +215,9 @@ class HEDAC_basic():
         self.lu = splu(A)
 
     def smoothing(self, points, sigma):
-        A = 1.0
         c = np.zeros([self.ny, self.nx])
         for p in points:
-            c += A * np.exp(- ((self.Xmg - p[0]) ** 2.0 + (self.Ymg - p[1]) ** 2.0) / (2.0 * sigma ** 2))
-
+            c += 1.0 * np.exp(- ((self.Xmg - p[0]) ** 2.0 + (self.Ymg - p[1]) ** 2.0) / (2.0 * sigma ** 2))
         return c
 
     def convergence(self):
@@ -286,67 +274,48 @@ class HEDAC_basic():
 
         print('Search')
         self.sit = 0
-        c_cum = np.zeros([self.ny, self.nx])
-
+        c_cumulative = np.zeros([self.ny, self.nx])
+        
         for self.it, self.t in enumerate(self.T):
             # old
             xa_all, ya_all = [], []
-            for xa, ya in zip(self.XA, self.YA):
-                xa_all.extend(xa)
-                ya_all.extend(ya)
+            xa_all = np.concatenate(self.XA)
+            ya_all = np.concatenate(self.YA)
 
             apoints = []
             for xa, ya in zip(self.XA, self.YA):
-                for xxa, yya in zip(xa[-len(self.FDT):], ya[-len(self.FDT):]):
-                    apoints.append([xxa, yya])
+                apoints.extend( np.column_stack((xa[-len(self.FDT):], ya[-len(self.FDT):])))
 
             self.c, _, _ = np.histogram2d(ya_all, xa_all, bins=[self.Yc, self.Xc])
-
-            c_cum += self.smoothing(apoints, self.sigma_c)
-
-            if np.mean(c_cum) > 0.0:
-                self.cs = c_cum / np.mean(c_cum)
-                self.c /= np.mean(self.c)
+            c_mean = np.mean(self.c)
+            if c_mean > 0.0:
+                c_cumulative += self.smoothing(apoints, self.sigma_c)
+                self.cs = c_cumulative / np.mean(c_cumulative)
+                self.c /= c_mean # normalize to have mean = 1
             else:
                 self.cs = np.zeros([self.ny, self.nx])
-            # self.c = filters.gaussian_filter(self.c, self.sigma_c/self.dx, truncate=50)
 
             self.ck = DCT(self.cs)
-
+            
+            # Area coverage 
             self.ac = self.smoothing(apoints, self.sigma_ac)
-
             self.ac /= np.mean(self.ac)
-            self.ac *= np.mean(self.cs) * self.nu
+            self.ac *= np.mean(self.cs) * self.nu # Coverage change rate
             # self.ac *= np.mean(self.m)
 
+            # Coverage Source update
             self.s = self.sourcefun(self.ms, self.cs)
-
             self.s -= self.ac
-
             self.convergence()
 
-            i = 0
+            # Solve heat equation
             self.B = -self.beta * self.s.flatten()
-            # for iY in range(self.ny):
-            #     for iX in range(self.nx):
-            #         self.B[i] = - self.beta * self.s[iY, iX]
-            #         i += 1
-
             u = self.lu.solve(self.B)
-
-            i = 0
             self.U = u.reshape(self.ny, self.nx)
-            i += self.ny * self.nx
-            # for iY in range(self.ny):
-            #     for iX in range(self.nx):
-            #         self.U[iY, iX] = u[i]
-            #         i += 1
-
-            #
+            
             # Gradient
-            #
             self.uy, self.ux = np.gradient(self.U)
-
+ 
             if self.outputStep > 0:
                 if self.it % self.outputStep == 0:
                     self.plot_solution()
@@ -357,27 +326,27 @@ class HEDAC_basic():
             for xa, ya in zip(self.XA, self.YA):
                 va_x = vax(xa[-1], ya[-1])[0]
                 va_y = vay(xa[-1], ya[-1])[0]
-                van = np.sqrt(va_x ** 2 + va_y ** 2)
+                van = np.hypot(va_x, va_y)
                 if van < 1e-10:
                     va_x = xa[-1] - xa[-2]
                     va_y = ya[-1] - ya[-2]
-                    van = np.sqrt(va_x ** 2 + va_y ** 2)
+                    van = np.hypot(va_x, va_y)
                     print('zero gradient')
                 va_x /= van
                 va_y /= van
 
                 pos_eps = 0.0  # 1e-30
-                last = len(xa)
+                last_xa, last_ya = xa[-1], ya[-1]
                 for fdt in self.FDT:  # fraction od dt
-                    _xa = xa[last - 1] + fdt * self.dt * self.va * va_x
-                    _ya = ya[last - 1] + fdt * self.dt * self.va * va_y
-                    if _xa < self.X[0]: _xa = self.X[0] + pos_eps
-                    if _xa > self.X[-1]: _xa = self.X[-1] - pos_eps
-                    if _ya < self.Y[0]: _ya = self.Y[0] + pos_eps
-                    if _ya > self.Y[-1]: _ya = self.Y[-1] - pos_eps
+                    _xa = last_xa + fdt * self.dt * self.va * va_x
+                    _ya = last_ya + fdt * self.dt * self.va * va_y
+                    _xa = np.clip(_xa, self.X[0] + pos_eps, self.X[-1] - pos_eps)
+                    _ya = np.clip(_ya, self.Y[0] + pos_eps, self.Y[-1] - pos_eps)
                     xa.append(_xa)
                     ya.append(_ya)
+
             print('%.5f %8.4e' % (self.t, self.E[-1]))
+
 
     def smc_search(self):
 
@@ -723,7 +692,7 @@ if __name__ == "__main__":
     test = HEDAC_basic()
 
     test.method = 'hedac'
-    test.results_dir = 'data/hedac_full'
+    test.results_dir = 'experiments/hedac'
     test.sigma_m = 0.01
     test.sigma_c = 0.01
 
