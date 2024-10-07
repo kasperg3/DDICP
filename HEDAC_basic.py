@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Feb 14 17:25:16 2015
-
-@author: stefan
-"""
-
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -14,22 +7,21 @@ import shutil
 import scipy.ndimage.filters as filters
 import scipy.sparse as sprs
 from scipy.sparse.linalg import splu
-from matplotlib import rc
 from matplotlib import colors
 import matplotlib as mpl
-import subprocess
 import datetime
 from scipy.fftpack import dct, idct
 import time
 import functools
 import numpy as np
-from PIL import Image
 import imageio
 
-# rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
-## for Palatino and other serif fonts use:
-# rc('font', **{'family': 'serif', 'serif': ['Palatino']})
-# rc('text', usetex=True)
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.sans-serif": "Palantino",
+})
+
 
 CM = np.loadtxt('cmap.txt').reshape(256, 3)
 
@@ -274,7 +266,6 @@ class HEDAC_basic():
         print('the end!')
 
     def hedac_search(self):
-
         print('Search')
         self.sit = 0
         c_cumulative = np.zeros([self.ny, self.nx])
@@ -488,6 +479,8 @@ class HEDAC_basic():
             ax3.plot(xa, ya, c='orange', lw=1, alpha=0.5)
         for xa, ya in zip(self.XA, self.YA):
             ax3.plot(xa[-1], ya[-1], 'o', c='orange', ms=8)
+        for xa, ya in zip(self.XA, self.YA):
+            ax3.plot(xa[0], ya[0], 'o', c='orange', ms=8)
         ax3.set_xlim(self.X[0], self.X[-1])
         ax3.set_ylim(self.Y[0], self.Y[-1])
 
@@ -557,7 +550,6 @@ class HEDAC_basic():
                 imageio.mimsave(os.path.join(self.results_dir, f'{self.method}_ergodic_coverage.gif'), images, duration=0.1)
             except Exception as e:
                 print(f'Creating GIF failed: {e}')
-  
 
 
     def save_fields(self):
@@ -677,13 +669,13 @@ def raw_image_test():
     test.sigma_c = 2
 
     # test.method = 'smc'
-    # test.results_dir = 'test_01/smc_full'
-    # test.sigma_m = 0.01
-    # test.sigma_c = 0.01
+    # test.results_dir = 'experiments/smc_full'
+    # test.sigma_m = 1
+    # test.sigma_c = 2
 
     test.X = np.arange(image.shape[1])
     test.Y = np.arange(image.shape[0])
-    test.T = np.arange(5001)
+    test.T = np.arange(100)
 
     test.samples = image
     test.alpha = 1.0
@@ -695,7 +687,7 @@ def raw_image_test():
     test.sourcefun = difsource
     # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
 
-    test.outputStep = 2
+    test.outputStep = 100
 
     # Normalize the image to create a probability distribution
     prob_dist = image / np.sum(image)
@@ -713,84 +705,10 @@ def raw_image_test():
 
     test.search()
     
+    # Export the paths to a dict with agent number and the path
+    agent_paths = {}
+    for i, (xa, ya) in enumerate(zip(test.XA, test.YA)):
+        agent_paths[i] = list(zip(xa, ya))
     
-    # Convert the paths back to the values corresponding in the image
-    
-def scaled_test():
-    
-
-    # Load the image
-    image_path = 'heatmap.png'
-    image = Image.open(image_path)
-    image = image.convert('L')
-    image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    image = np.array(image)
-    image_height, image_width = image.shape[:2]
-
-    def m(x, y):
-        # Get image dimensions
-        # Map x, y to image coordinates and sample values
-        x_img = int(x * (image_width-1))
-        y_img = int(y * (image_height-1))
-        sampled_value = image[y_img, x_img]
-        return sampled_value
-        
-    test = HEDAC_basic()
-
-    test.method = 'hedac'
-    test.results_dir = 'experiments/hedac'
-    test.sigma_m = 0.01
-    test.sigma_c = 0.01
-
-    # test.method = 'smc'
-    # test.results_dir = 'test_01/smc_full'
-    # test.sigma_m = 0.01
-    # test.sigma_c = 0.01
-
-    test.X = np.linspace(0, 1, image_height)
-    test.Y = np.linspace(0, 1, image_width)
-    test.T = np.linspace(0, 1, 5001)
-
-    test.samples = m
-    test.beta = 20.0
-    test.gamma = 1000.0
-    test.va = 20
-    test.sigma_ac = 0.01
-    # test.kappa = 0.1
-    test.sourcefun = difsource
-    # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
-
-    test.outputStep = 5
-
-    # Normalize the image to create a probability distribution
-    prob_dist = image / np.sum(image)
-
-    # Flatten the probability distribution and create a list of coordinates
-    flat_prob_dist = prob_dist.flatten()
-    coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
-
-    # Sample agent locations based on the probability distribution
-    num_agents = 20
-    sampled_indices = np.random.choice(len(flat_prob_dist), size=num_agents, p=flat_prob_dist)
-    sampled_coordinates = [(coordinates[i][0] / (image_width-1), coordinates[i][1] / (image_height-1)) for i in sampled_indices]
-
-    # Assign the sampled coordinates to the agents
-    test.agents = sampled_coordinates
-
-    # test.agents = [[0.2, 0.56], [0.35, 0.53], [0.5, 0.5], [0.65, 0.47], [0.8, 0.44]]
-
-    test.search()
-    
-    
-    
-    # Convert the paths back to the values corresponding in the image
-    
-    
-
-    # Convert the paths back to the values corresponding in the image
-    
-    
-
-
 if __name__ == "__main__":
     raw_image_test()
