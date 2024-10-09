@@ -81,7 +81,7 @@ class Environment:
         return points
 
     # # Apply the heatmap generation to all road lines
-    def generate_heatmap(self, geometry_collection, sample_distance, xedges, yedges, infill_geometries = False):
+    def generate_heatmap(self, geometry_collection, sample_distance, xedges, yedges, infill_geometries = True):
         heatmap = np.zeros((len(xedges) - 1, len(yedges) - 1))
         for feature in geometry_collection.geoms:
             interpolated_points = []
