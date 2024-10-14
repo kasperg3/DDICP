@@ -50,7 +50,7 @@ class Environment:
 
         roads = query_features(
             GeoPolygon(query_region),
-            {"highway": ["service", "track"]},
+            {"highway": ["service", "track", "highway", "primary", "secondary", "tertiary", "residential"]},
         )
         road_collection = [geom for road in roads.values() for geom in road.geoms]
         self.road_geom = GeoMultiTrajectory(road_collection).set_crs("EPSG:2197")
@@ -204,7 +204,12 @@ class Environment:
                 
                 # Convert to a greyscale image with alpha
                 img = Image.fromarray(greyscale_with_alpha, mode='LA')
-                img.save("data/plots/heatmap.png")
+                # Create a filename with the slider values
+                slider_values = "_".join([f"{key}_sigma{filter_sliders[key].val:.1f}_alpha{multiplier_sliders[key].val:.1f}" for key in filter_sliders.keys()])
+                filename = f"data/heatmaps/heatmap_{slider_values}.png"
+                
+                # Save the image with the generated filename
+                img.save(filename)
                 print("Heatmap saved as heatmap.png")
 
             save_button.on_clicked(save)

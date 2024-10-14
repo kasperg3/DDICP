@@ -4,3 +4,5 @@ data/gpxz_api_key.txt
 .vscode/
 __pycache__/
 __MACOSX/
+.venv/
+experiments/
