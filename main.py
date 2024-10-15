@@ -6,6 +6,7 @@ from scipy.ndimage import gaussian_filter
 from shapely.geometry import LineString
 from trajallocpy import Agent, CoverageProblem, Experiment, Task, Utility
 import random
+import datetime
 import matplotlib.pyplot as plt
 
 def compute_trajectories(image, env: environment_modelling.Environment, experiment_dir: str = "experiments/"):
@@ -37,7 +38,7 @@ def compute_trajectories(image, env: environment_modelling.Environment, experime
     test.alpha = 1.0
     test.beta = 0.5
     test.gamma = 0.1
-    test.va = 2 # Step size 
+    test.va = 3 # Step size 
     test.sigma_ac = 0.1
     # test.kappa = 0.1
     test.sourcefun = HEDAC_basic.difsource
@@ -110,7 +111,7 @@ def task_allocation(boundary, tasks, n_agents=3, capacity=1000):
             computeTime,
             cp.getNumberOfTasks(),
             len(agent_list))
-    return exp.routes
+    return exp
 
 
 
@@ -122,7 +123,8 @@ if __name__ == '__main__':
     # polygon_file = "data/DemaScenarios/Water.geojson"
     base_path = "data/DemaScenarios/"
     environment_file = "FlatTerrainNature"
-    experiment_dir = "experiments/" + environment_file + "/"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = f"experiments/{environment_file}/{timestamp}/"
     env = environment_modelling.Environment(base_path + environment_file + ".geojson")
     sigma_wetland = get_filter_sigma(10, env)
     sigma_roads = get_filter_sigma(30, env)
@@ -137,33 +139,52 @@ if __name__ == '__main__':
     world_coordinates = np.zeros_like(paths)
 
     for i in range(len(paths)):
+        agent_path = []
         for j in range(len(paths[i])):
-            world_coordinates[i][j] = env.image_to_world(paths[i][j][0], paths[i][j][1])
+            agent_path.append(env.image_to_world(paths[i][j][0], paths[i][j][1]))
+        world_coordinates[i] = agent_path
 
     # fourier_coef_per_dim = 30
     # get_fourier_coef(heatmap, num_k_per_dim=fourier_coef_per_dim)
     # Export the environment to a geojson file 
     boundary = env.polygon
     tasks = [Task.TrajectoryTask(i, LineString(world_coordinates[i]), reward=1) for i in range(len(paths))]
-    routes = task_allocation(boundary.geometry, tasks, n_agents=4, capacity=2000)
+    exp_results = task_allocation(boundary.geometry, tasks, n_agents=4, capacity=2000)
 
     # Plot the routes
     plt.figure(figsize=(10, 10))
-    for route in routes.values():
-        x, y = zip(*route)
-        plt.plot(x, y)
     
-    env.polygon.plot()
+    colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
+    for i, route in enumerate(exp_results.tasks.values()):
+        for segment in route:
+            x, y = segment.xy
+            plt.plot(x, y, linestyle='-', alpha=0.3, linewidth=10, color=colors(i))
+            plt.plot(x, y, linestyle='-', alpha=1.0, color=colors(i))
+
+    for i, route in enumerate(exp_results.transport.values()):
+        for segment in route:
+            if len(segment) == 0:
+                continue
+            x, y = zip(*segment)
+            plt.plot(x, y, linestyle=':', alpha=0.5,color=colors(i))
+        
+    
+    # env.polygon.plot()
     plt.title('Agent Routes')
+    plt.axis('equal')
     plt.xlabel('X Coordinate')
     plt.ylabel('Y Coordinate')
     plt.grid(True)
     plt.show()
 
     # evaluate the performance of the allocation
-
+    
+    
+    
     # save the trajectories to a numpy file
     np.save(experiment_dir + "trajectories_local.npy", paths)
     np.save(experiment_dir + "trajectories_world.npy", world_coordinates)
     np.save(experiment_dir + "heatmap.npy", heatmap)
     # create the distributions created by the agents paths
+
+
