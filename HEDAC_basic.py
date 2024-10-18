@@ -246,10 +246,9 @@ class HEDAC_basic():
         fajl.write('%12s %12s %12s %12s %12s\n' % ('t', 'E1', 'E2', 'E3', 'E4'))
         fajl.close()
 
-        if self.outputStep > 0:
-            fajl = open(self.results_dir + '/agents.txt', 'w')
-            fajl.write('%d\n' % len(self.XA))
-            fajl.close()
+        fajl = open(self.results_dir + '/agents.txt', 'w')
+        fajl.write('%d\n' % len(self.XA))
+        fajl.close()
 
         if self.method == 'hedac':
             self.hedac_search()
@@ -328,8 +327,8 @@ class HEDAC_basic():
             # Gradient
             self.uy, self.ux = np.gradient(self.U)
  
-            if self.outputStep > 0:
-                if self.it % self.outputStep == 0:
+            if self.outputStep > 0  or self.it == self.T.shape[0] - 1:
+                if self.it % self.outputStep == 0 or self.it == self.T.shape[0] - 1:
                     self.plot_solution()
 
             vax = intrp.RegularGridInterpolator((self.Y, self.X), self.ux, method='linear')

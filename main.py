@@ -1,3 +1,4 @@
+from typing import List
 import HEDAC_basic
 import environment_modelling
 import trajallocpy
@@ -8,17 +9,11 @@ from trajallocpy import Agent, CoverageProblem, Experiment, Task, Utility
 import random
 import datetime
 import pickle
+from dataclasses import dataclass
 import matplotlib.pyplot as plt
 
-def compute_trajectories(env: environment_modelling.Environment, experiment_dir: str = "experiments/"):
-    # Parse these parameters from the func
-    sigma_wetland = get_filter_sigma(10, env)
-    sigma_roads = get_filter_sigma(30, env)
+def compute_trajectories(image,steps = 100, experiment_dir: str = "experiments/"):
 
-    sigma_features = {"roads": sigma_roads, "wetlands": sigma_wetland}
-    alpha_features = {"roads": 1, "wetlands": 0.5}
-
-    image = env.get_combined_heatmap(sigma_features, alpha_features)
     image = np.array(image, dtype=np.float64).T
     image_height, image_width = image.shape[:2]
             
@@ -36,7 +31,7 @@ def compute_trajectories(env: environment_modelling.Environment, experiment_dir:
 
     test.X = np.arange(image.shape[1])
     test.Y = np.arange(image.shape[0])
-    test.T = np.arange(100)
+    test.T = np.arange(steps)
 
     test.samples = image
     test.alpha = 1.0
@@ -48,7 +43,7 @@ def compute_trajectories(env: environment_modelling.Environment, experiment_dir:
     test.sourcefun = HEDAC_basic.difsource
     # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
 
-    test.outputStep = test.T.shape[0]-1 # Output the results at the last time step
+    test.outputStep = -1 #test.T.shape[0]-1 # Output the results at the last time step
 
     # Normalize the image to create a probability distribution
     prob_dist = image / np.sum(image)
@@ -116,7 +111,42 @@ def task_allocation(boundary, tasks, n_agents=3, capacity=1000):
             len(agent_list))
     return exp
 
+def plot_experiment_results(exp_results):
+    # Plot the routes
+    plt.figure(figsize=(10, 10))
+    colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
+    for i, route in enumerate(exp_results.tasks.values()):
+        for segment in route:
+            x, y = segment.xy
+            plt.plot(x, y, linestyle='-', alpha=0.3, linewidth=10, color=colors(i))
+            plt.plot(x, y, linestyle='-', alpha=1.0, color=colors(i))
 
+    for i, route in enumerate(exp_results.transport.values()):
+        for segment in route:
+            if len(segment) == 0:
+                continue
+            x, y = zip(*segment)
+            plt.plot(x, y, linestyle=':', alpha=0.5,color=colors(i))
+    
+    # env.polygon.plot()
+    plt.title('Agent Routes')
+    plt.axis('equal')
+    plt.xlabel('X Coordinate [m]')
+    plt.ylabel('Y Coordinate [m]')
+    plt.grid(True)
+    plt.savefig(experiment_dir + "task_allocation.png")
+    plt.show()
+
+
+@dataclass
+class ExperimentData:
+    heatmap: np.ndarray # Target distribution
+    tasks: List[Task.TrajectoryTask]
+    min_x: float
+    min_y: float
+    buffer: float
+    meter_per_bin: float
+    
 
 if __name__ == '__main__':
     # Create a new environment
@@ -143,49 +173,53 @@ if __name__ == '__main__':
                 "residential",
             ]
         },
-    ).set_buffer(100).build()
+    ).set_buffer(0).build()
 
-    # Compute the trajectories inside the environment
-    paths = compute_trajectories(env, experiment_dir=experiment_dir)
+    # Parse these parameters from the func
+    sigma_wetland = get_filter_sigma(10, env)
+    sigma_roads = get_filter_sigma(30, env)
 
-    # convert all the coordinates in the paths to real world coordinates
-    world_coordinates = np.zeros_like(paths)
-    for i in range(len(paths)):
-        agent_path = []
-        for j in range(len(paths[i])):
-            agent_path.append(env.image_to_world(paths[i][j][0], paths[i][j][1]))
-        world_coordinates[i] = agent_path
-    
-    tasks = [Task.TrajectoryTask(i, LineString(world_coordinates[i]), reward=1) for i in range(len(paths))]
-    exp_results = task_allocation(env.polygon.geometry, tasks, n_agents=4, capacity=2000)
-    
-    # Plot the routes
-    plt.figure(figsize=(10, 10))
-    colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
-    for i, route in enumerate(exp_results.tasks.values()):
-        for segment in route:
-            x, y = segment.xy
-            plt.plot(x, y, linestyle='-', alpha=0.3, linewidth=10, color=colors(i))
-            plt.plot(x, y, linestyle='-', alpha=1.0, color=colors(i))
+    sigma_features = {"roads": sigma_roads, "wetlands": sigma_wetland}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
 
-    for i, route in enumerate(exp_results.transport.values()):
-        for segment in route:
-            if len(segment) == 0:
-                continue
-            x, y = zip(*segment)
-            plt.plot(x, y, linestyle=':', alpha=0.5,color=colors(i))
-    
-    # env.polygon.plot()
-    plt.title('Agent Routes')
-    plt.axis('equal')
-    plt.xlabel('X Coordinate [m]')
-    plt.ylabel('Y Coordinate [m]')
-    plt.grid(True)
-    plt.savefig(experiment_dir + "task_allocation.png")
-    plt.show()
+    combined_heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
 
-    # create a collection of tasks and pickl them to a file
-    task_collection = [Task.TrajectoryTask(i, LineString(world_coordinates[i]), reward=1) for i in range(len(paths))]
+    import concurrent.futures
+    def process_experiment(i):
+        # Compute the trajectories inside the environment
+        paths = compute_trajectories(combined_heatmap, steps=200, experiment_dir=f"data/DemaScenariosTasks/{environment_file}_{i}/")
+
+        tasks = [Task.TrajectoryTask(i, LineString(paths[i]), reward=1) for i in range(len(paths))]
+
+        # Create an instance of the data class
+        experiment_data = ExperimentData(
+            heatmap=combined_heatmap, 
+            tasks=tasks, 
+            min_x=env.minx, 
+            min_y=env.miny, 
+            buffer=env.buffer, 
+            meter_per_bin=env.meter_per_bin
+        )
+
+        # Save the instance to a pickle file
+        with open(f'data/DemaScenariosTasks/{environment_file}_{i}/{environment_file}_{i}.pkl', 'wb') as f:
+            pickle.dump(experiment_data, f)
+        
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(process_experiment, i) for i in range(40)]
+
+    # # convert all the coordinates in the paths to real world coordinates
+    # world_coordinates = np.zeros_like(paths)
+    # for i in range(len(paths)):
+    #     agent_path = []
+    #     for j in range(len(paths[i])):
+    #         agent_path.append(env.image_to_world(paths[i][j][0], paths[i][j][1]))
+    #     world_coordinates[i] = agent_path
+
+    # exp_results = task_allocation(env.polygon.geometry, tasks, n_agents=4, capacity=2000)
+    # plot_experiment_results(exp_results)
+
     
     # TODO oct 17
     # Identify features for all the environments and define some sigma and alpha value to the scenarios, and document it as being static throughout the experiments
@@ -198,18 +232,11 @@ if __name__ == '__main__':
     
     # Dataset:
     # Create a dataset class, and export it as a pickle:
-    # Routes/tasks --> TrajectoryTask in world coordinates, saved as a pickle
+    # Routes/tasks --> TrajectoryTask in image coordinates, saved as a pickle
     # Heatmap --> numpy
 
-    # TODO Find a way of generating a dataset of tasks 
-    # Generate 40 different sets of 30 tasks
-    # Save the "target coverage" as a so that it can be used for the evaluation of the allocation
-    # save the configuration of the hedac algorithm 
-    
     # Environment features: 
     # FlatNature: Lakes, river, wetlands, roads, Forrest edges, 
     # HillyNature: (Possibility of extracting the heightmap?), Forrest edges 
     # Urban: Parks, roads, pathways, Lakes, river, wetlands
     # Water: Wetlands, banks, roads
-    
-    
