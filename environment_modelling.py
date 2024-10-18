@@ -18,18 +18,55 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Slider
 import matplotlib.colors as mcolors
 from PIL import Image
+from sklearn.metrics.pairwise import rbf_kernel
 log = trajgenpy.Logging.get_logger()
 
 
+class EnvironmentBuilder:
+    def __init__(self):
+        self.polygon_file = None
+        self.sample_distance = 1
+        self.meter_per_bin = 3
+        self.buffer = 0
+        self.tags = {}
+
+    def set_polygon_file(self, polygon_file):
+        self.polygon_file = polygon_file
+        return self
+
+    def set_sample_distance(self, sample_distance):
+        self.sample_distance = sample_distance
+        return self
+
+    def set_meter_per_bin(self, meter_per_bin):
+        self.meter_per_bin = meter_per_bin
+        return self
+
+    def set_buffer(self, buffer):
+        self.buffer = buffer
+        return self
+
+    def set_feature(self, name, tags):
+        self.tags[name] = tags
+        return self
+    
+    def build(self):
+        return Environment(
+            self.polygon_file,
+            self.sample_distance,
+            self.meter_per_bin,
+            self.buffer,
+            self.tags
+        )
+
+
 class Environment:
-    def __init__(self, polygon_file, sample_distance=1, meter_per_bin=3, buffer=0):
+    def __init__(self, polygon_file, sample_distance, meter_per_bin, buffer, tags):
         self.polygon_file = polygon_file
         self.sample_distance = sample_distance # The distance in pixels between each sample on an interpolated line
         self.meter_per_bin = meter_per_bin
         self.buffer = buffer
         self.polygon = None
-        self.road_geom = None
-        self.wetland_geom = None
         self.xedges = None
         self.yedges = None
         self.heatmaps = {}
@@ -40,30 +77,28 @@ class Environment:
         query_region = shapely.Polygon(coordinates)
         log.info("Query region bounds: %s", query_region.bounds)
         self.polygon = GeoPolygon(query_region).set_crs("EPSG:2197")
-
-        wetland = query_features(
-            GeoPolygon(query_region),
-            {"natural": ["water", "wetland"]},
-        )
-        wetland_collection = [geom for feature in wetland.values() for geom in feature.geoms]
-        self.wetland_geom = GeoMultiPolygon(wetland_collection).set_crs("EPSG:2197")
-
-        roads = query_features(
-            GeoPolygon(query_region),
-            {"highway": ["service", "track", "highway", "primary", "secondary", "tertiary", "residential"]},
-        )
-        road_collection = [geom for road in roads.values() for geom in road.geoms]
-        self.road_geom = GeoMultiTrajectory(road_collection).set_crs("EPSG:2197")
         self.minx, self.miny, self.maxx, self.maxy = self.polygon.geometry.bounds
         num_bins_x = int((self.maxx - self.minx) * 1 / self.meter_per_bin)
         num_bins_y = int((self.maxy - self.miny) * 1 / self.meter_per_bin)
         log.info("Number of bins x: %i y: %i", num_bins_x, num_bins_y)
         self.xedges = np.linspace(self.minx - self.buffer, self.maxx + self.buffer, num_bins_x + 1)
         self.yedges = np.linspace(self.miny - self.buffer, self.maxy + self.buffer, num_bins_y + 1)
-        
-        self.heatmaps["roads"] = self.generate_heatmap(self.road_geom.geometry, self.sample_distance, self.xedges, self.yedges)
-        self.heatmaps["wetland"] = self.generate_heatmap(self.wetland_geom.geometry, self.sample_distance, self.xedges, self.yedges)
-
+        # 
+        for key in tags.keys():
+            features = query_features(
+                GeoPolygon(query_region),
+                tags[key],
+            )
+            
+            feature_collection = [geom for feature in features.values() for geom in feature.geoms]
+            if all(isinstance(geom, shapely.geometry.Polygon) for geom in feature_collection):
+                feature_geom = GeoMultiPolygon(feature_collection).set_crs("EPSG:2197")
+            elif all(isinstance(geom, LineString) for geom in feature_collection):
+                feature_geom = GeoMultiTrajectory(feature_collection).set_crs("EPSG:2197")
+            else:
+                raise ValueError("Invalid feature type in feature collection")
+            self.heatmaps[key] = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
+            
 
     def image_to_world(self, x, y):
         x = x* self.meter_per_bin + self.minx - self.buffer
@@ -81,8 +116,8 @@ class Environment:
         return points
 
     # # Apply the heatmap generation to all road lines
-    def generate_heatmap(self, geometry_collection, sample_distance, xedges, yedges, infill_geometries = True):
-        heatmap = np.zeros((len(xedges) - 1, len(yedges) - 1))
+    def generate_heatmap(self, geometry_collection, sample_distance, infill_geometries = True):
+        heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
         for feature in geometry_collection.geoms:
             interpolated_points = []
             if isinstance(feature, LineString):
@@ -91,7 +126,7 @@ class Environment:
             elif isinstance(feature, shapely.geometry.Polygon):        
                 if infill_geometries:
                     # Check if all combinations of xedges and yedges are inside the polygon
-                    x_y_combinations = np.array(np.meshgrid(xedges, yedges)).T.reshape(-1, 2)
+                    x_y_combinations = np.array(np.meshgrid(self.xedges, self.yedges)).T.reshape(-1, 2)
                     mask = np.array([feature.contains(shapely.geometry.Point(x, y)) for x, y in x_y_combinations])
                     interpolated_points.extend([shapely.geometry.Point(x, y) for (x, y), m in zip(x_y_combinations, mask) if m])
                 else:
@@ -100,25 +135,31 @@ class Environment:
                 
             x, y = zip(*[(point.x, point.y) for point in interpolated_points])
             
-            temp_heatmap, _, _ = np.histogram2d(x, y, bins=(xedges, yedges))
+            temp_heatmap, _, _ = np.histogram2d(x, y, bins=(self.xedges, self.yedges))
             heatmap += temp_heatmap
+            
+        # Make sure that overlapping features are not counted multiple times in the histogram
+        heatmap = np.clip(heatmap, 0, 1) 
         return heatmap
 
-    def normalize_heatmap(self,heatmap, norm):
-        # Normalize or clip the heatmap
-        if norm == "clip":
-            heatmap = np.clip(heatmap, 0, 1)
-        elif norm== "norm":
-            heatmap = heatmap / np.max(heatmap)
+    
+
+    def get_combined_heatmap(self, sigma_features, alpha_features):
+        heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
+            
+        for key in self.heatmaps.keys():
+            # normalize the histograms with the number of bins occupied
+            heatmap += gaussian_filter((self.heatmaps[key]* alpha_features[key]) / np.sum(self.heatmaps[key]), sigma=sigma_features[key]) 
+            # apply a RBF kernel to the heatmap
+            # rbf_kernel = np.exp(-0.5 * (self.heatmaps[key] / np.max(self.heatmaps[key]))**2 / sigma_features[key]**2)
+            # heatmap += rbf_kernel * alpha_features[key]
+        
+        # Make sure the probabilities sum to 1
+        heatmap = heatmap / np.sum(heatmap)
+        
         return heatmap
-
-    def get_combined_heatmap(self, sigma, normalize=True):
-        if normalize:
-            return self.normalize_heatmap(gaussian_filter(self.heatmaps["roads"] + self.heatmaps["wetland"], sigma=sigma), "norm")
-        else:
-            return gaussian_filter(self.heatmaps["roads"] + self.heatmaps["wetland"], sigma=sigma)
-
-    def interactive_plot(self, norm="clip", use_sliders=True, plot_environment=True, export=False):
+    
+    def interactive_plot(self, use_sliders=True, plot_environment=True, export=False):
         # Apply Gaussian filter to the combined heatmap
         # Calculate the width of the Gaussian filter in pixels
         filter_width_meters = 10  # Example width in meters
@@ -127,8 +168,11 @@ class Environment:
         # Calculate the sigma value for the Gaussian filter
         sigma = filter_width_pixels / (2 * np.sqrt(2 * np.log(2)))
         
-        heatmap = gaussian_filter(self.heatmaps["roads"] + self.heatmaps["wetland"], sigma=sigma)
-        heatmap = self.normalize_heatmap(heatmap, norm)
+        sigma_features = {key: sigma for key in self.heatmaps.keys()}
+        alpha_features = {key: 1 for key in self.heatmaps.keys()}
+        
+        heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
+        
         # Create a figure and axis for the slider
         fig, ax = plt.subplots()
         # Set xlim and ylim based on the bounding box of the polygon
@@ -179,26 +223,26 @@ class Environment:
             save_button = plt.Button(save_ax, 'Save', color='white', hovercolor='0.975')
 
             def update(val):
-                combined_heatmap = sum(
-                    gaussian_filter(self.heatmaps[key] * multiplier_sliders[key].val, sigma=slider.val)
-                    for key, slider in filter_sliders.items()
-                )
-                combined_heatmap = self.normalize_heatmap(combined_heatmap, norm)
+                sigma_features = {key: slider.val for key, slider in filter_sliders.items()}
+                alpha_features = {key: multiplier_sliders[key].val for key in filter_sliders.keys()}
+                combined_heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
+                
                 heatmap_img.set_data(combined_heatmap.T)
                 plt.draw()
 
-
             def save(event):
-                combined_heatmap = np.zeros_like(self.heatmaps["roads"])
-                for key, slider in filter_sliders.items():
-                    combined_heatmap += gaussian_filter(self.heatmaps[key]*multiplier_sliders[key].val, sigma=slider.val)
-                combined_heatmap = self.normalize_heatmap(combined_heatmap, norm)
+                sigma_features = {key: slider.val for key, slider in filter_sliders.items()}
+                alpha_features = {key: multiplier_sliders[key].val for key in filter_sliders.keys()}
+                combined_heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
+                # Normalize the heatmap to the range 0-255
+                combined_heatmap = (combined_heatmap - combined_heatmap.min()) / (combined_heatmap.max() - combined_heatmap.min()) * 255
+                
                 temp_heatmap = np.flipud(combined_heatmap.T) # Makes sure that the map is oriented correctly
                 
                 height, width = temp_heatmap.shape
                 greyscale_with_alpha = np.zeros((height, width, 2), dtype=np.uint8)
                 # Set the grayscale channel based on the matrix values
-                greyscale_with_alpha[..., 0] = temp_heatmap*255  # Greyscale (intensity) values
+                greyscale_with_alpha[..., 0] = temp_heatmap  # Greyscale (intensity) values
                 # Set the alpha channel: 255 where matrix > 0, otherwise 0 (transparent)
                 greyscale_with_alpha[..., 1] = np.where(temp_heatmap > -1, 255, 0)
                 
@@ -231,7 +275,21 @@ if __name__ == "__main__":
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
-    env = Environment(polygon_file)
+    env = EnvironmentBuilder().set_polygon_file(polygon_file).set_feature(
+        "wetlands", {"natural": ["water", "wetland"]}
+    ).set_feature(
+        "roads",
+        {
+            "highway": [
+                "service",
+                "track",
+                "highway",
+                "primary",
+                "secondary",
+                "tertiary",
+                "residential",
+            ]
+        },
+    ).build()
 
-    heatmap = env.get_combined_heatmap(5,normalize=True)
     env.interactive_plot()

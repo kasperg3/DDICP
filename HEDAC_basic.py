@@ -14,7 +14,7 @@ from scipy.fftpack import dct, idct
 import time
 import functools
 import numpy as np
-import imageio
+import imageio.v2 as imageio
 
 plt.rcParams.update({
     "text.usetex": True,
@@ -216,7 +216,6 @@ class HEDAC_basic():
         return c
 
     def convergence(self):
-
         E1 = np.sqrt(np.sum(((self.ms - self.cs) / (self.nx * self.ny)) ** 2))
         E2 = np.sum(((self.ms - self.cs) / (self.nx * self.ny)) ** 2)
         # self.E.append( np.sum( ( (self.m - self.c)/(self.nx*self.ny) ) ** 2  ) )
@@ -225,7 +224,7 @@ class HEDAC_basic():
         L2 = 1.0 / (1 + self.kx ** 2 + self.ky ** 2) ** 1.5 * ((self.ck - self.mk).T ** 2)
         E3 = np.sum(L2)
 
-        self.E.append(E3)
+        self.E.append(E4)
 
         fajl = open(self.results_dir + '/convergence.txt', 'a')
         fajl.write('%12.6e %12.6e %12.6e %12.6e %12.6e\n' % (self.T[self.it], E1, E2, E3, E4))
@@ -265,11 +264,30 @@ class HEDAC_basic():
         self.save_fields()
         print('the end!')
 
+    def agent_distributions(self):
+        # loop through all agents and their paths
+        xa_all, ya_all = [], []
+        xa_all = np.concatenate(self.XA)
+        ya_all = np.concatenate(self.YA)
+        distributions = {}
+        for i, (xa, ya) in enumerate(zip(self.XA, self.YA)):
+            # Agent trajectories
+            points = (np.column_stack((xa[-len(self.FDT):], ya[-len(self.FDT):])))
+
+            self.c, _, _ = np.histogram2d(ya_all, xa_all, bins=[self.Yc, self.Xc])
+            c_cumulative = self.smoothing(points, self.sigma_c)
+            distributions[i] = c_cumulative / np.mean(c_cumulative)
+        return distributions
+            
+            
     def hedac_search(self):
         print('Search')
         self.sit = 0
         c_cumulative = np.zeros([self.ny, self.nx])
         
+        # Predetermine the length of the agent paths, based on self.it, but add noise to the value which correspond to 50% of the value
+        agent_path_lengths = [int(np.random.normal(len(self.T)/2, 0.25 * len(self.T))) for _ in range(len(self.agents))]
+        print(agent_path_lengths)
         for self.it, self.t in enumerate(self.T):
             # old
             xa_all, ya_all = [], []
@@ -316,8 +334,8 @@ class HEDAC_basic():
 
             vax = intrp.RegularGridInterpolator((self.Y, self.X), self.ux, method='linear')
             vay = intrp.RegularGridInterpolator((self.Y, self.X), self.uy, method='linear')
-
-            for xa, ya in zip(self.XA, self.YA):
+            
+            for i, (xa, ya) in enumerate(zip(self.XA, self.YA)):
                 va_x = vax((ya[-1], xa[-1]))
                 va_y = vay((ya[-1], xa[-1]))
                 van = np.hypot(va_x, va_y)
@@ -325,12 +343,14 @@ class HEDAC_basic():
                     va_x = xa[-1] - xa[-2]
                     va_y = ya[-1] - ya[-2]
                     van = np.hypot(va_x, va_y)
-                    print('zero gradient')
+                    print('zero gradient!')
                 va_x /= van
                 va_y /= van
 
                 pos_eps = 0.0  # 1e-30
                 last_xa, last_ya = xa[-1], ya[-1]
+                # if self.it > agent_path_lengths[i]:
+                #     continue
                 for fdt in self.FDT:  # fraction od dt
                     _xa = last_xa + fdt * self.dt * self.va * va_x
                     _ya = last_ya + fdt * self.dt * self.va * va_y
@@ -383,7 +403,7 @@ class HEDAC_basic():
             """
             ##Las[iK1][iK2]=1./pow(1.+iK1*iK1+iK2*iK2,1.5) * (_fft_ck1[iK2 * _fft_n + iK1] - _fft_muk1[iK2 * _fft_n + iK1]);
             ky, kx = np.meshgrid(np.arange(self.ny), np.arange(self.nx))
-
+            
             self.Las = 1.0 / (1 + kx ** 2 + ky ** 2) ** 1.5 * (self.ck - self.mk).T
 
             self.convergence()
@@ -479,8 +499,8 @@ class HEDAC_basic():
             ax3.plot(xa, ya, c='orange', lw=1, alpha=0.5)
         for xa, ya in zip(self.XA, self.YA):
             ax3.plot(xa[-1], ya[-1], 'o', c='orange', ms=8)
-        for xa, ya in zip(self.XA, self.YA):
-            ax3.plot(xa[0], ya[0], 'o', c='orange', ms=8)
+        # for xa, ya in zip(self.XA, self.YA):
+        #     ax3.plot(xa[0], ya[0], 'o', c='orange', ms=8)
         ax3.set_xlim(self.X[0], self.X[-1])
         ax3.set_ylim(self.Y[0], self.Y[-1])
 
@@ -534,12 +554,12 @@ class HEDAC_basic():
         ax6.set_ylim(np.min(self.E), np.max(self.E))
         ax6.set_ylabel(r'$\phi^2$')
         ax6.set_xlabel(r't')
-        ax6.set_yscale('log')
+        # ax6.set_yscale('log')
         # ax6.set_xscale('log')
         ax6.grid(which='minor')
         ax6.grid(which='major')
 
-        plt.savefig(self.results_dir + '/it_%06d.png' % self.it)
+        plt.savefig(self.results_dir + 'it_%06d.png' % self.it)
         plt.close()
         # Create a GIF from the saved figures
         if self.it % 10 == 0:
@@ -664,7 +684,7 @@ def raw_image_test():
     test = HEDAC_basic()
 
     test.method = 'hedac'
-    test.results_dir = 'experiments/hedac'
+    test.results_dir = 'experiments/hedac/'
     test.sigma_m = 1 # Envrionemtal variance, for smoothing environments
     test.sigma_c = 2
 
@@ -675,7 +695,7 @@ def raw_image_test():
 
     test.X = np.arange(image.shape[1])
     test.Y = np.arange(image.shape[0])
-    test.T = np.arange(100)
+    test.T = np.arange(50)
 
     test.samples = image
     test.alpha = 1.0
@@ -687,7 +707,7 @@ def raw_image_test():
     test.sourcefun = difsource
     # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
 
-    test.outputStep = 100
+    test.outputStep = 2
 
     # Normalize the image to create a probability distribution
     prob_dist = image / np.sum(image)
@@ -697,7 +717,7 @@ def raw_image_test():
     coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
 
     # Sample agent locations based on the probability distribution
-    num_agents = 20
+    num_agents = 30
     sampled_indices = np.random.choice(len(flat_prob_dist), size=num_agents, p=flat_prob_dist)
     sampled_coordinates = [(coordinates[i][0], coordinates[i][1]) for i in sampled_indices]
     # Assign the sampled coordinates to the agents
@@ -709,6 +729,12 @@ def raw_image_test():
     agent_paths = {}
     for i, (xa, ya) in enumerate(zip(test.XA, test.YA)):
         agent_paths[i] = list(zip(xa, ya))
+        
+    # Save the agent paths to a file
+    np.save('experiments/agent_paths.npy', agent_paths)
     
+    
+    
+        
 if __name__ == "__main__":
     raw_image_test()

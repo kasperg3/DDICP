@@ -7,15 +7,19 @@ from shapely.geometry import LineString
 from trajallocpy import Agent, CoverageProblem, Experiment, Task, Utility
 import random
 import datetime
+import pickle
 import matplotlib.pyplot as plt
 
-def compute_trajectories(image, env: environment_modelling.Environment, experiment_dir: str = "experiments/"):
-    # # Load the image
-    # image_path = 'heatmap.png'
-    # image = Image.open(image_path)
-    # image = image.convert('L')
-    # image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    # image = np.array(image, dtype=np.float64)
+def compute_trajectories(env: environment_modelling.Environment, experiment_dir: str = "experiments/"):
+    # Parse these parameters from the func
+    sigma_wetland = get_filter_sigma(10, env)
+    sigma_roads = get_filter_sigma(30, env)
+
+    sigma_features = {"roads": sigma_roads, "wetlands": sigma_wetland}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
+
+    image = env.get_combined_heatmap(sigma_features, alpha_features)
+    image = np.array(image, dtype=np.float64).T
     image_height, image_width = image.shape[:2]
             
     test = HEDAC_basic.HEDAC_basic()
@@ -23,7 +27,7 @@ def compute_trajectories(image, env: environment_modelling.Environment, experime
     test.method = 'hedac'
     test.results_dir = experiment_dir
     test.sigma_m = 1 # Envrionemtal variance, for smoothing environments
-    test.sigma_c = 2
+    test.sigma_c = 2 # agent sensor footprint variance
 
     # test.method = 'smc'
     # test.results_dir = 'experiments/smc_full'
@@ -32,13 +36,13 @@ def compute_trajectories(image, env: environment_modelling.Environment, experime
 
     test.X = np.arange(image.shape[1])
     test.Y = np.arange(image.shape[0])
-    test.T = np.arange(50)
+    test.T = np.arange(100)
 
     test.samples = image
     test.alpha = 1.0
     test.beta = 0.5
     test.gamma = 0.1
-    test.va = 3 # Step size 
+    test.va = 1 # Step size for the agents, Do not change this, as this is the same as changing the number of timesteps
     test.sigma_ac = 0.1
     # test.kappa = 0.1
     test.sourcefun = HEDAC_basic.difsource
@@ -65,7 +69,6 @@ def compute_trajectories(image, env: environment_modelling.Environment, experime
     for i, (xa, ya) in enumerate(zip(test.XA, test.YA)):
         # paths[i] = [env.image_to_world(x, y) for x, y in zip(xa, ya)]
         paths.append([[x, y] for x, y in zip(xa, ya)])
-        
     return np.array(paths)
 
 def get_filter_sigma(filter_width_meters, env):
@@ -125,35 +128,39 @@ if __name__ == '__main__':
     environment_file = "FlatTerrainNature"
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = f"experiments/{environment_file}/{timestamp}/"
-    env = environment_modelling.Environment(base_path + environment_file + ".geojson")
-    sigma_wetland = get_filter_sigma(10, env)
-    sigma_roads = get_filter_sigma(30, env)
-
-    heatmap = gaussian_filter(env.heatmaps["roads"],sigma=sigma_roads) + gaussian_filter(env.heatmaps["wetland"],sigma=sigma_wetland) * 0.3
-    heatmap = np.array(heatmap, dtype=np.float64)
+    env = environment_modelling.EnvironmentBuilder().set_polygon_file(base_path + environment_file + ".geojson").set_feature(
+        "wetlands", {"natural": ["water", "wetland"]}
+    ).set_feature(
+        "roads",
+        {
+            "highway": [
+                "service",
+                "track",
+                "highway",
+                "primary",
+                "secondary",
+                "tertiary",
+                "residential",
+            ]
+        },
+    ).set_buffer(100).build()
 
     # Compute the trajectories inside the environment
-    paths = compute_trajectories(heatmap.T, env, experiment_dir=experiment_dir)
+    paths = compute_trajectories(env, experiment_dir=experiment_dir)
 
     # convert all the coordinates in the paths to real world coordinates
     world_coordinates = np.zeros_like(paths)
-
     for i in range(len(paths)):
         agent_path = []
         for j in range(len(paths[i])):
             agent_path.append(env.image_to_world(paths[i][j][0], paths[i][j][1]))
         world_coordinates[i] = agent_path
-
-    # fourier_coef_per_dim = 30
-    # get_fourier_coef(heatmap, num_k_per_dim=fourier_coef_per_dim)
-    # Export the environment to a geojson file 
-    boundary = env.polygon
+    
     tasks = [Task.TrajectoryTask(i, LineString(world_coordinates[i]), reward=1) for i in range(len(paths))]
-    exp_results = task_allocation(boundary.geometry, tasks, n_agents=4, capacity=2000)
-
+    exp_results = task_allocation(env.polygon.geometry, tasks, n_agents=4, capacity=2000)
+    
     # Plot the routes
     plt.figure(figsize=(10, 10))
-    
     colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
     for i, route in enumerate(exp_results.tasks.values()):
         for segment in route:
@@ -167,24 +174,42 @@ if __name__ == '__main__':
                 continue
             x, y = zip(*segment)
             plt.plot(x, y, linestyle=':', alpha=0.5,color=colors(i))
-        
     
     # env.polygon.plot()
     plt.title('Agent Routes')
     plt.axis('equal')
-    plt.xlabel('X Coordinate')
-    plt.ylabel('Y Coordinate')
+    plt.xlabel('X Coordinate [m]')
+    plt.ylabel('Y Coordinate [m]')
     plt.grid(True)
+    plt.savefig(experiment_dir + "task_allocation.png")
     plt.show()
 
-    # evaluate the performance of the allocation
+    # create a collection of tasks and pickl them to a file
+    task_collection = [Task.TrajectoryTask(i, LineString(world_coordinates[i]), reward=1) for i in range(len(paths))]
     
-    
-    
-    # save the trajectories to a numpy file
-    np.save(experiment_dir + "trajectories_local.npy", paths)
-    np.save(experiment_dir + "trajectories_world.npy", world_coordinates)
-    np.save(experiment_dir + "heatmap.npy", heatmap)
-    # create the distributions created by the agents paths
+    # TODO oct 17
+    # Identify features for all the environments and define some sigma and alpha value to the scenarios, and document it as being static throughout the experiments
+    # Generate trajectories using HEDAC
+    # Identify how long the trajectories should be when having 30 tasks generated in hedac
+    # Document this in the paper as a initial environment definition
 
+    # Create a dataset of tasks and target distribution and save them to a file
+    # Remove the extra reward for optimizing the return, this will create better paths for the agents
+    
+    # Dataset:
+    # Create a dataset class, and export it as a pickle:
+    # Routes/tasks --> TrajectoryTask in world coordinates, saved as a pickle
+    # Heatmap --> numpy
 
+    # TODO Find a way of generating a dataset of tasks 
+    # Generate 40 different sets of 30 tasks
+    # Save the "target coverage" as a so that it can be used for the evaluation of the allocation
+    # save the configuration of the hedac algorithm 
+    
+    # Environment features: 
+    # FlatNature: Lakes, river, wetlands, roads, Forrest edges, 
+    # HillyNature: (Possibility of extracting the heightmap?), Forrest edges 
+    # Urban: Parks, roads, pathways, Lakes, river, wetlands
+    # Water: Wetlands, banks, roads
+    
+    
