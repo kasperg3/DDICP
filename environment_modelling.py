@@ -77,6 +77,8 @@ class Environment:
         query_region = shapely.Polygon(coordinates)
         log.info("Query region bounds: %s", query_region.bounds)
         self.polygon = GeoPolygon(query_region).set_crs("EPSG:2197")
+        self.area = self.polygon.geometry.area
+        log.info("Area of the polygon: %s km²", self.area / 1e6)
         self.minx, self.miny, self.maxx, self.maxy = self.polygon.geometry.bounds
         num_bins_x = int((self.maxx - self.minx) * 1 / self.meter_per_bin)
         num_bins_y = int((self.maxy - self.miny) * 1 / self.meter_per_bin)
@@ -139,7 +141,9 @@ class Environment:
             heatmap += temp_heatmap
             
         # Make sure that overlapping features are not counted multiple times in the histogram
-        heatmap = np.clip(heatmap, 0, 1) 
+        heatmap = np.clip(heatmap, 0, 1)
+        # Normalize based on the number of bins occupied
+        heatmap = heatmap / np.sum(heatmap) 
         return heatmap
 
     
@@ -148,14 +152,15 @@ class Environment:
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
             
         for key in self.heatmaps.keys():
+            heatmap+= gaussian_filter((self.heatmaps[key]) *alpha_features[key], sigma=sigma_features[key])
             # normalize the histograms with the number of bins occupied
-            heatmap += gaussian_filter((self.heatmaps[key]* alpha_features[key]) / np.sum(self.heatmaps[key]), sigma=sigma_features[key]) 
+            # heatmap += temp_heatmap / np.max(temp_heatmap)
             # apply a RBF kernel to the heatmap
             # rbf_kernel = np.exp(-0.5 * (self.heatmaps[key] / np.max(self.heatmaps[key]))**2 / sigma_features[key]**2)
             # heatmap += rbf_kernel * alpha_features[key]
         
         # Make sure the probabilities sum to 1
-        heatmap = heatmap / np.sum(heatmap)
+        # heatmap = heatmap / np.max(heatmap)
         
         return heatmap
     
@@ -184,11 +189,11 @@ class Environment:
             # road_geom.plot(color="red",linestyle="dashed",)
             # wetland_geom.plot()
             # polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
-            self.polygon.plot(
-                facecolor="none",
-                edgecolor="black",
-                linewidth=2,
-            )
+            # self.polygon.plot(
+            #     facecolor="none",
+            #     edgecolor="black",
+            #     linewidth=2,
+            # )
             # building_geom.plot()
             
             
@@ -202,11 +207,11 @@ class Environment:
             palette = "gist_gray"
 
         # Use the custom colormap for the heatmap
-        cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=palette), ax=ax, orientation='vertical')
+        cbar = plt.colorbar(plt.cm.ScalarMappable(cmap="jet"), ax=ax, orientation='vertical')
+        cbar.mappable.set_clim(vmin=heatmap.min(), vmax=heatmap.max())
         cbar.set_label('Target Distribution')
         extent = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
         heatmap_img = plt.imshow(heatmap.T, extent=extent, origin='lower', cmap=palette, alpha=alpha)
-        
         if use_sliders:
             filter_sliders = {}
             multiplier_sliders = {}
@@ -228,6 +233,7 @@ class Environment:
                 combined_heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
                 
                 heatmap_img.set_data(combined_heatmap.T)
+                cbar.mappable.set_clim(vmin=combined_heatmap.min(), vmax=combined_heatmap.max())
                 plt.draw()
 
             def save(event):
@@ -235,7 +241,7 @@ class Environment:
                 alpha_features = {key: multiplier_sliders[key].val for key in filter_sliders.keys()}
                 combined_heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
                 # Normalize the heatmap to the range 0-255
-                combined_heatmap = (combined_heatmap - combined_heatmap.min()) / (combined_heatmap.max() - combined_heatmap.min()) * 255
+                # combined_heatmap = (combined_heatmap - combined_heatmap.min()) / (combined_heatmap.max() - combined_heatmap.min()) * 127
                 
                 temp_heatmap = np.flipud(combined_heatmap.T) # Makes sure that the map is oriented correctly
                 
@@ -250,11 +256,29 @@ class Environment:
                 img = Image.fromarray(greyscale_with_alpha, mode='LA')
                 # Create a filename with the slider values
                 slider_values = "_".join([f"{key}_sigma{filter_sliders[key].val:.1f}_alpha{multiplier_sliders[key].val:.1f}" for key in filter_sliders.keys()])
-                filename = f"data/heatmaps/heatmap_{slider_values}.png"
+                filename = f"data/plots/heatmap_{slider_values}.png"
                 
                 # Save the image with the generated filename
                 img.save(filename)
                 print("Heatmap saved as heatmap.png")
+                
+                # Save the plot itself as a png
+                # Temporarily hide the sliders and buttons
+                for slider in filter_sliders.values():
+                    slider.ax.set_visible(False)
+                for slider in multiplier_sliders.values():
+                    slider.ax.set_visible(False)
+                save_button.ax.set_visible(False)
+
+                # Save the plot area
+                plt.savefig("data/plots/plot.png", bbox_inches='tight')
+
+                # Restore the visibility of sliders and buttons
+                for slider in filter_sliders.values():
+                    slider.ax.set_visible(True)
+                for slider in multiplier_sliders.values():
+                    slider.ax.set_visible(True)
+                save_button.ax.set_visible(True)
 
             save_button.on_clicked(save)
             

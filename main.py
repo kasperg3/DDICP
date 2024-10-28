@@ -183,11 +183,36 @@ if __name__ == '__main__':
     alpha_features = {"roads": 1, "wetlands": 0.5}
 
     combined_heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
+    
+    gen_dataset = True
+    if gen_dataset:
+        import concurrent.futures
+        def process_experiment(i):
+            # Compute the trajectories inside the environment
+            paths = compute_trajectories(combined_heatmap, steps=200, experiment_dir=f"data/DemaScenariosTasks/{environment_file}_{i}/")
 
-    import concurrent.futures
-    def process_experiment(i):
+            tasks = [Task.TrajectoryTask(i, LineString(paths[i]), reward=1) for i in range(len(paths))]
+
+            # Create an instance of the data class
+            experiment_data = ExperimentData(
+                heatmap=combined_heatmap, 
+                tasks=tasks, 
+                min_x=env.minx, 
+                min_y=env.miny, 
+                buffer=env.buffer, 
+                meter_per_bin=env.meter_per_bin
+            )
+
+            # Save the instance to a pickle file
+            with open(f'data/DemaScenariosTasks/{environment_file}_{i}/{environment_file}_{i}.pkl', 'wb') as f:
+                pickle.dump(experiment_data, f)
+        
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(process_experiment, i) for i in range(40)]
+    else:
         # Compute the trajectories inside the environment
-        paths = compute_trajectories(combined_heatmap, steps=200, experiment_dir=f"data/DemaScenariosTasks/{environment_file}_{i}/")
+        paths = compute_trajectories(combined_heatmap, steps=100, experiment_dir=experiment_dir)
 
         tasks = [Task.TrajectoryTask(i, LineString(paths[i]), reward=1) for i in range(len(paths))]
 
@@ -200,15 +225,6 @@ if __name__ == '__main__':
             buffer=env.buffer, 
             meter_per_bin=env.meter_per_bin
         )
-
-        # Save the instance to a pickle file
-        with open(f'data/DemaScenariosTasks/{environment_file}_{i}/{environment_file}_{i}.pkl', 'wb') as f:
-            pickle.dump(experiment_data, f)
-        
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [executor.submit(process_experiment, i) for i in range(40)]
-
     # # convert all the coordinates in the paths to real world coordinates
     # world_coordinates = np.zeros_like(paths)
     # for i in range(len(paths)):
