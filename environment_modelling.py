@@ -106,6 +106,11 @@ class Environment:
         x = x* self.meter_per_bin + self.minx - self.buffer
         y = y* self.meter_per_bin + self.miny - self.buffer
         return x, y
+    
+    def world_to_image(self, x, y):
+        x = (x - self.minx + self.buffer) / self.meter_per_bin
+        y = (y - self.miny + self.buffer) / self.meter_per_bin
+        return x, y
 
     # Function to interpolate points on the line
     def interpolate_line(self, line, distance):

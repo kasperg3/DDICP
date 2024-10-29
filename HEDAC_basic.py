@@ -679,7 +679,7 @@ def raw_image_test():
     image = image.transpose(Image.FLIP_TOP_BOTTOM)
     image = np.array(image, dtype=np.float64)
     image_height, image_width = image.shape[:2]
-            
+
     test = HEDAC_basic()
 
     test.method = 'hedac'
@@ -708,10 +708,8 @@ def raw_image_test():
 
     test.outputStep = 2
 
-    # Normalize the image to create a probability distribution
-    prob_dist = image / np.sum(image)
-
     # Flatten the probability distribution and create a list of coordinates
+    prob_dist = image / np.sum(image)
     flat_prob_dist = prob_dist.flatten()
     coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
 
