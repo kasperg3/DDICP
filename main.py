@@ -18,6 +18,16 @@ from matplotlib.colors import LinearSegmentedColormap
 from scipy.interpolate import RBFInterpolator
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+            
+def image_to_world(x, y, meters_per_bin, minx, miny, buffer):
+    x = x* meters_per_bin + minx - buffer
+    y = y* meters_per_bin + miny - buffer
+    return x, y
+
+def world_to_image(x, y, meters_per_bin, minx, miny, buffer):
+    x = (x - minx + buffer) / meters_per_bin
+    y = (y - miny + buffer) / meters_per_bin
+    return int(x), int(y)#Figure out if this rounding is bad
 
 def compute_trajectories(image,steps = 100, experiment_dir: str = "experiments/"):
 
@@ -52,18 +62,10 @@ def compute_trajectories(image,steps = 100, experiment_dir: str = "experiments/"
 
     test.outputStep = -1 #test.T.shape[0]-1 # Output the results at the last time step
 
-    # Normalize the image to create a probability distribution
-    prob_dist = image
 
-    # Flatten the probability distribution and create a list of coordinates
-    flat_prob_dist = prob_dist.flatten()
-    coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
-
-    # Sample agent locations based on the probability distribution
-    num_agents = 30
-    # Assign the sampled coordinates to the agents
-    test.agents = [(coordinates[i][0], coordinates[i][1]) for i in np.random.choice(len(flat_prob_dist), size=num_agents, p=flat_prob_dist)]
     
+    # Use the function in the compute_trajectories function
+    test.agents = sample_points(image, 30)
     test.search()
     
     # Export the paths to a dict with agent number and the path
@@ -72,6 +74,15 @@ def compute_trajectories(image,steps = 100, experiment_dir: str = "experiments/"
         # paths[i] = [env.image_to_world(x, y) for x, y in zip(xa, ya)]
         paths.append([[x, y] for x, y in zip(xa, ya)])
     return np.array(paths)
+
+def sample_points(prob_dist, num_points):
+    image_height, image_width = prob_dist.shape[:2]
+    # Flatten the probability distribution and create a list of coordinates
+    flat_prob_dist = (prob_dist/np.sum(prob_dist)).flatten()
+    coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
+
+    # Sample agent locations based on the probability distribution
+    return [(coordinates[i][0], coordinates[i][1]) for i in np.random.choice(len(flat_prob_dist), size=num_points, p=flat_prob_dist)]
 
 def get_filter_sigma(filter_width_meters, env):
     filter_width_pixels = filter_width_meters / env.meter_per_bin
@@ -111,7 +122,6 @@ def task_allocation(boundary, tasks, n_agents=3, capacity=1000):
         route_list,
         maxRouteCost,
     ) = exp.evaluateSolution()
-    
     
     return exp
 
@@ -165,8 +175,7 @@ def generate_dataset(environment_file, generate_all=False):
 
     combined_heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
     
-    gen_dataset = True
-    if gen_dataset:
+    if generate_all:
         import concurrent.futures
         def process_experiment(i):
             # Compute the trajectories inside the environment
@@ -209,12 +218,11 @@ def generate_dataset(environment_file, generate_all=False):
             meter_per_bin=env.meter_per_bin
         )
 
-def information_gain_from_task(points, heatmap, sensor_range):
-    sigma=2
+def information_gain_from_task(points, heatmap, sensor_range, sensor_sigma):
     x, y = np.meshgrid(np.arange(heatmap.shape[1]), np.arange(heatmap.shape[0]))
     distances = np.min([np.sqrt((x - p[1])**2 + (y - p[0])**2) for p in points], axis=0)
     # Gaussian sensor model (decay with distance)
-    sensor_model = np.exp(-distances**2 / (2 * sigma**2))
+    sensor_model = np.exp(-distances**2 / (2 * sensor_sigma**2))
     sensor_mask = distances <= sensor_range
     information_gain = heatmap * sensor_model * sensor_mask
     return information_gain.sum() / heatmap.sum()
@@ -234,16 +242,97 @@ def information_gain_from_task(points, heatmap, sensor_range):
     # normalize the reward by the total information of the environment
     return np.sum(experiment_data.heatmap[mask > 0]) / np.sum(experiment_data.heatmap) 
     
+def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_sigma):
+    survivors = sample_points(heatmap, 100)
+    survivors_world_coords = [image_to_world(p[1], p[0], experiment_data.meter_per_bin, experiment_data.min_x, experiment_data.min_y, experiment_data.buffer) for p in survivors]
+    survivors_found =[]
+    timer = 0
+    for trajectory in trajectories:
+        for i in range(1, len(trajectory)):
+            # Calculate the time it takes to traverse the trajectory
+            agent_position = np.array(trajectory[i])
+            distance = np.linalg.norm(agent_position - np.array(trajectory[i-1]))
+            time_to_traverse = distance / 5  # Assuming constant velocity of 5 m/s
+            timer += time_to_traverse
+            for survivor in survivors_world_coords:
+                if np.linalg.norm(agent_position - np.array(survivor)) <= sensor_range:
+                    survivors_found.append((timer, survivor))
+                    survivors_world_coords.remove(survivor)
+
+    # # Using the sensormodel, evaluate how much information was gained from the trajectories over the heatmap
+    # trajectories_in_heatmap_coords = []
+    # for trajectory in trajectories:
+    #     trajectory_in_heatmap_coords = [world_to_image(p[0], p[1], experiment_data.meter_per_bin, experiment_data.min_x, experiment_data.min_y, experiment_data.buffer) for p in trajectory]
+    #     trajectories_in_heatmap_coords.append(trajectory_in_heatmap_coords)
+    
+    # information_gain = 0
+    # for trajectory in trajectories:
+    #     information_gain += information_gain_from_task(trajectory, heatmap, sensor_range, sensor_sigma)
+
+    # Using the heatmap, sample n_survivors=100, based on the probability distribution of the heatmap
+    # Using the trajectories and the sensor model, calculate how many and how fast the different survivors were located.
+    # - the agents that traverse the trajectories as simple point mass systems.
+    # Using the sensormodel, evaluate how much information was gained from the trajectories over the heatmap
+    
+    plot = True
+    show_survivors = True
+    if plot:
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+
+        # Plot agent routes
+        axs[0].ticklabel_format(style='plain', axis='both', useOffset=True, useMathText=True, scilimits=(0, 0))
+        colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
         
+        for i, route in enumerate(exp_results.tasks.values()):
+            for segment in route:
+                x, y = segment.xy
+                axs[0].plot(x, y, linestyle='-', alpha=0.3, linewidth=10, color=colors(i))
+                axs[0].plot(x, y, linestyle='-', alpha=1.0, color=colors(i))
+
+        for i, route in enumerate(exp_results.transport.values()):
+            for segment in route:
+                if len(segment) == 0:
+                    continue
+                x, y = zip(*segment)
+                axs[0].plot(x, y, linestyle=':', alpha=0.5, color=colors(i))
+        
+        if show_survivors:
+            for survivor in survivors_world_coords:
+                axs[0].plot(survivor[0], survivor[1], 'ro')  # Plot survivors as red dots
+            for time, survivor in survivors_found:
+               axs[0].plot(survivor[0], survivor[1], 'o', color='green')
+        
+        x, y = experiment_data.boundary.exterior.xy
+        axs[0].plot(x, y, color='black', linewidth=2, linestyle='--')
+        axs[0].set_title('Agent Routes')
+        axs[0].axis('equal')
+        axs[0].set_xlabel('X Coordinate [m]')
+        axs[0].set_ylabel('Y Coordinate [m]')
+        axs[0].grid(True)
+
+        # Plot survivors found over time
+        times, _ = zip(*survivors_found)
+        axs[1].plot(times,range(1, len(times) + 1), '-', color='blue')
+        axs[1].set_title('Survivors Found Over Time')
+        axs[1].set_xlabel('Time [s]')
+        axs[1].set_ylabel('Number of Survivors Found')
+        axs[1].grid(True)
+
+        plt.tight_layout()
+        plt.savefig(path + "/task_allocation_and_survivors_found.png")
+        plt.pause(1)
+        plt.close()
+
 
 if __name__ == '__main__':
     # Comment this out to generate the dataset
-    # generate_dataset("FlatTerrainNature", True)
+    # generate_dataset("FlatTerrainNature", False)
     # exit(0)
     # Load the dataset
     dataset_dir = "data/DemaScenariosTasks"
     datasets = {}
-
+    sensor_range = 10 # TODO change this to proper values
+    sensor_variance = 2
     for folder in os.listdir(dataset_dir):
         folder_path = os.path.join(dataset_dir, folder)
         if os.path.isdir(folder_path):
@@ -251,21 +340,9 @@ if __name__ == '__main__':
             if os.path.isfile(pkl_file):
                 with open(pkl_file, 'rb') as f:
                     datasets[folder_path] = pickle.load(f)
-                    
-    
-    # convert all the coordinates in the paths to real world coordinates
-    # world_coordinates = np.zeros_like(paths)
-    # for i in range(len(paths)):
-    #     agent_path = []
-    #     for j in range(len(paths[i])):
-    #         agent_path.append(env.image_to_world(paths[i][j][0], paths[i][j][1]))
-    #     world_coordinates[i] = agent_path
 
     for path, experiment_data in datasets.items():
         experiment_data: ExperimentData
-        # Convert the boundary to image coordinates? TODO remove this  
-        # boundary = shapely.affinity.translate(experiment_data.boundary, xoff=-experiment_data.min_x, yoff=-experiment_data.min_y)
-        # boundary = shapely.affinity.scale(boundary, xfact=1/experiment_data.meter_per_bin, yfact=1/experiment_data.meter_per_bin, origin=(0, 0))
         # alter the tasks length to follow a mean and variance of a certain task length
         mean_length = 100*4  # Each iteration consists of 4 steps (ODE discretisation)
         variance_length = 20  # Define the variance of the task lengths
@@ -277,13 +354,8 @@ if __name__ == '__main__':
             task: Task.TrajectoryTask
             task_length = np.random.normal(mean_length, variance_length)
             point_list = list(task.trajectory.coords)[:int(task_length)]
-            task.reward = information_gain_from_task(point_list, experiment_data.heatmap, 10)
-            
-            def image_to_world(x, y, meters_per_bin, minx, miny, buffer):
-                x = x* meters_per_bin + minx - buffer
-                y = y* meters_per_bin + miny - buffer
-                return x, y
-    
+            task.reward = information_gain_from_task(point_list, experiment_data.heatmap, sensor_range, sensor_variance)
+
             # TODO convert the point_list to world coordinates for the allocation to make sense
             point_list = [image_to_world(p[0], p[1],experiment_data.meter_per_bin,experiment_data.min_x,experiment_data.min_y, experiment_data.buffer) for p in point_list]
             task.trajectory = LineString(point_list)
@@ -293,60 +365,11 @@ if __name__ == '__main__':
         total_reward = sum(task.reward for task in experiment_data.tasks)
         print(f"Total reward: {total_reward}")
         
-        exp_results = task_allocation(experiment_data.boundary, experiment_data.tasks, n_agents=3, capacity=3000)
+        exp_results = task_allocation(experiment_data.boundary, experiment_data.tasks, n_agents=3, capacity=2000)
+
+        evaluate_experiment(experiment_data.heatmap,list(exp_results.routes.values()), sensor_range,sensor_variance)
         
-
-        plot = True
-        if plot:
-            plt.figure(figsize=(10, 10))
-            # colors =  [mcolors.to_rgb(c) for c in plt.cm.jet(np.linspace(0, 1, 256))]
-            # palette = LinearSegmentedColormap.from_list("custom_flare", colors)
-            # plt.imshow(coverage.T, cmap=palette, interpolation='nearest', origin='lower')
-            # Offset the boundary by the minimum value
-
-            plt.ticklabel_format(style='plain', axis='both',useOffset=True, useMathText=True, scilimits=(0,0))
-            colors = plt.cm.get_cmap('tab10', len(exp_results.tasks))
-            for i, route in enumerate(exp_results.tasks.values()):
-                for segment in route:
-                    x, y = segment.xy
-                    plt.plot(x, y, linestyle='-', alpha=0.3, linewidth=10, color=colors(i))
-                    plt.plot(x, y, linestyle='-', alpha=1.0, color=colors(i))
-
-            for i, route in enumerate(exp_results.transport.values()):
-                for segment in route:
-                    if len(segment) == 0:
-                        continue
-                    x, y = zip(*segment)
-                    plt.plot(x, y, linestyle=':', alpha=0.5,color=colors(i))
-                    
-            x, y = experiment_data.boundary.exterior.xy
-            
-            plt.plot(x, y, color='black', linewidth=2, linestyle='--')
-            # env.polygon.plot()
-            plt.title('Agent Routes')
-            plt.axis('equal')
-            plt.xlabel('X Coordinate [m]')
-            plt.ylabel('Y Coordinate [m]')
-            plt.grid(True)
-            plt.savefig(path + "/task_allocation.png")
-            plt.pause(0.1)
-            plt.close()
-
     
-    # TODO oct 17
-    # Identify features for all the environments and define some sigma and alpha value to the scenarios, and document it as being static throughout the experiments
-    # Generate trajectories using HEDAC
-    # Identify how long the trajectories should be when having 30 tasks generated in hedac
-    # Document this in the paper as a initial environment definition
-
-    # Create a dataset of tasks and target distribution and save them to a file
-    # Remove the extra reward for optimizing the return, this will create better paths for the agents
-    
-    # Dataset:
-    # Create a dataset class, and export it as a pickle:
-    # Routes/tasks --> TrajectoryTask in image coordinates, saved as a pickle
-    # Heatmap --> numpy
-
     # Environment features: 
     # FlatNature: Lakes, river, wetlands, roads, Forrest edges, 
     # HillyNature: (Possibility of extracting the heightmap?), Forrest edges 

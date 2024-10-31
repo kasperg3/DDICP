@@ -70,7 +70,7 @@ class Environment:
         self.xedges = None
         self.yedges = None
         self.heatmaps = {}
-        
+        self.features = {}        
         with open(self.polygon_file, "r") as f:
             data = json.load(f)
         coordinates = data["features"][0]["geometry"]["coordinates"][0]
@@ -86,13 +86,15 @@ class Environment:
         self.xedges = np.linspace(self.minx - self.buffer, self.maxx + self.buffer, num_bins_x + 1)
         self.yedges = np.linspace(self.miny - self.buffer, self.maxy + self.buffer, num_bins_y + 1)
         # 
+
         for key in tags.keys():
-            features = query_features(
+            feature = query_features(
                 GeoPolygon(query_region),
                 tags[key],
             )
             
-            feature_collection = [geom for feature in features.values() for geom in feature.geoms]
+            
+            feature_collection = [geom for feature in feature.values() for geom in feature.geoms]
             if all(isinstance(geom, shapely.geometry.Polygon) for geom in feature_collection):
                 feature_geom = GeoMultiPolygon(feature_collection).set_crs("EPSG:2197")
             elif all(isinstance(geom, LineString) for geom in feature_collection):
@@ -101,6 +103,7 @@ class Environment:
                 raise ValueError("Invalid feature type in feature collection")
             self.heatmaps[key] = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
             
+            self.features[key] = feature_geom
 
     def image_to_world(self, x, y):
         x = x* self.meter_per_bin + self.minx - self.buffer
@@ -152,11 +155,18 @@ class Environment:
         return heatmap
 
     
-
     def get_combined_heatmap(self, sigma_features, alpha_features):
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
-            
         for key in self.heatmaps.keys():
+            
+            # c = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
+            # for i in range(len(self.xedges) - 1):
+            #     for j in range(len(self.yedges) - 1):
+            #         x_center = (self.xedges[i] + self.xedges[i + 1]) / 2
+            #         y_center = (self.yedges[j] + self.yedges[j + 1]) / 2
+            #         c[j, i] += np.exp(- ((self.heatmaps[key] - x_center) ** 2.0 + (self.heatmaps[key] - y_center) ** 2.0) / (2.0 * sigma_features[key] ** 2))
+            # c+=heatmap*alpha_features[key]
+            # TODO convert this to use a RBF instead
             heatmap+= gaussian_filter((self.heatmaps[key]) *alpha_features[key], sigma=sigma_features[key])
             # normalize the histograms with the number of bins occupied
             # heatmap += temp_heatmap / np.max(temp_heatmap)
@@ -169,7 +179,7 @@ class Environment:
         
         return heatmap
     
-    def interactive_plot(self, use_sliders=True, plot_environment=True, export=False):
+    def interactive_plot(self, use_sliders=True, show_basemap = True, show_features=False, export=False):
         # Apply Gaussian filter to the combined heatmap
         # Calculate the width of the Gaussian filter in pixels
         filter_width_meters = 10  # Example width in meters
@@ -189,34 +199,39 @@ class Environment:
         # to ensure the basemap has the right location
         ax.set_xlim(self.minx - self.buffer, self.maxx + self.buffer)
         ax.set_ylim(self.miny - self.buffer, self.maxy + self.buffer)
-        if plot_environment:
-            # Ploting 
-            # road_geom.plot(color="red",linestyle="dashed",)
-            # wetland_geom.plot()
-            # polygon.plot(facecolor="none", edgecolor="black", linewidth=2)
-            # self.polygon.plot(
-            #     facecolor="none",
-            #     edgecolor="black",
-            #     linewidth=2,
-            # )
-            # building_geom.plot()
-            
-            
+        if show_features:
+            for key, feature in self.features.items():
+                if isinstance(feature, GeoMultiPolygon):
+                    feature.plot()
+                elif isinstance(feature, GeoMultiTrajectory):
+                    feature.plot(color="red", linestyle="--")
+
+        if show_basemap:
             alpha = 0.4
             Utils.plot_basemap(provider=cx.providers.OpenStreetMap.Mapnik, crs="EPSG:2197")
-            colors =  [mcolors.to_rgb(c) for c in plt.cm.jet(np.linspace(0, 1, 256))]
-            palette = LinearSegmentedColormap.from_list("custom_flare", colors)
-            # palette = plt.cm.coolwarm
-        else: 
-            alpha = 1
-            palette = "gist_gray"
+        
+        colors = [
+            (1, 1, 1),    # White
+            (0, 0, 1),    # Blue
+            (0, 0.5, 1),    # Blue
+            (0, 1, 1),    # Cyan
+            (0.7, 1, 0),    # Green
+            (1, 1, 0),    # Yellow
+            (1, 0.5, 0),  # Orange
+            (1, 0, 0),    # Red
+            (0.5, 0, 0),  # Dark red
+        ]
 
+        # Create the colormap
+        custom_cmap = LinearSegmentedColormap.from_list("jet_fade_to_white", colors)
+        # custom_cmap = "jet"
+        
         # Use the custom colormap for the heatmap
-        cbar = plt.colorbar(plt.cm.ScalarMappable(cmap="jet"), ax=ax, orientation='vertical')
+        cbar = plt.colorbar(plt.cm.ScalarMappable(cmap=custom_cmap), ax=ax, orientation='vertical')
         cbar.mappable.set_clim(vmin=heatmap.min(), vmax=heatmap.max())
         cbar.set_label('Target Distribution')
         extent = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
-        heatmap_img = plt.imshow(heatmap.T, extent=extent, origin='lower', cmap=palette, alpha=alpha)
+        heatmap_img = plt.imshow(heatmap.T, extent=extent, origin='lower', cmap=custom_cmap, alpha=alpha)
         if use_sliders:
             filter_sliders = {}
             multiplier_sliders = {}
