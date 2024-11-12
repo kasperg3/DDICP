@@ -26,7 +26,7 @@ import threading
        
 import contextily as cx
 from trajgenpy import Utils
-     
+
 
 def plot_information_gain_histogram(dataset_dir):
     mean_length = 100*4  # Each iteration consists of 4 steps (ODE discretisation)
@@ -674,7 +674,6 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
     # Urban: Parks, roads, pathways, Lakes, river, wetlands
     # Water: Wetlands, banks, roads
 
-
 def evaluate_results(experiment_file):
     experiment_dir = os.path.dirname(experiment_file)
     df = pd.read_pickle(experiment_file)
@@ -703,16 +702,16 @@ def evaluate_results(experiment_file):
     # Find the mean and confidence interval for each time step
     # Pad the samples to the same length
     max_length = max(len(sample) for sample in cumulative_information_samples)
-    padded_cumulative_information_samples = [np.pad(sample, (0, max_length - len(sample)), 'constant', constant_values=np.nan) for sample in cumulative_information_samples]
-    mean_cumulative_information = np.nanmean(padded_cumulative_information_samples, axis=0)
-    std_cumulative_information = np.nanstd(padded_cumulative_information_samples, axis=0)
+    padded_cumulative_information_samples = [np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in cumulative_information_samples]
+    mean_cumulative_information = np.mean(padded_cumulative_information_samples, axis=0)
+    std_cumulative_information = np.std(padded_cumulative_information_samples, axis=0)
     confidence_interval = 1.96 * std_cumulative_information / np.sqrt(len(padded_cumulative_information_samples))
 
     # Plot the mean cumulative information gain with confidence interval
     plt.figure(figsize=(10, 5))
     # Pad the information_time_samples to the same length
-    padded_information_time_samples = [np.pad(sample, (0, max_length - len(sample)), 'constant', constant_values=np.nan) for sample in information_time_samples]
-    mean_information_time = np.nanmean(padded_information_time_samples, axis=0)
+    padded_information_time_samples = [np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in information_time_samples]
+    mean_information_time = np.mean(padded_information_time_samples, axis=0)
     plt.plot(mean_information_time, mean_cumulative_information, label='Mean Cumulative Information Gain')
     plt.fill_between(mean_information_time, 
                      mean_cumulative_information - confidence_interval, 
@@ -742,9 +741,16 @@ def evaluate_results(experiment_file):
         return mean_detection_time, confidence_interval_detection
 
     for num_survivors in [5, 20, 50, 75]:
-        mean_time, confidence_interval = calculate_detection_time(all_survivors_found_time, num_survivors)
+        mean_time, ci = calculate_detection_time(all_survivors_found_time, num_survivors)
         print(f"Mean time for detecting the first {num_survivors} survivors: {mean_time:.2f} seconds")
-        print(f"95% confidence interval: ±{confidence_interval:.2f} seconds")
+        print(f"95% confidence interval: ±{ci:.2f} seconds")
+    
+    def calculate_cumulative_information_gain(mean_information_time, mean_cumulative_information, time):
+        return mean_cumulative_information[np.searchsorted(mean_information_time, time)], confidence_interval[np.searchsorted(mean_information_time, time)]
+    
+    for time in [100, 500, 1000]:
+        cumulative_information_at_time, ci = calculate_cumulative_information_gain(mean_information_time, mean_cumulative_information, time)
+        print(f"Mean cumulative information gain at {time} seconds: {cumulative_information_at_time:.2f} ± {ci:.2f}")
 
 def no_shaping(reward):
     return reward
@@ -755,21 +761,13 @@ def exponential_shaping(reward):
 def static_reward_shaping(reward):
     return 1
 
-if __name__ == '__main__':
-    dataset_dir = "data/DemaScenariosTasks"
-    environment_file = "FlatTerrainNature"
-    # generate_dataset(environment_file,40,200, True)
-    # plot_information_gain_histogram(dataset_dir)
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl")
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_reward_shaping_agents_3_capacity_2666_20241111_101419/20241111_101419.pkl")
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
-    # exit(0)
+def run_allocation_experiments():
     sensor_range = 10
     sensor_variance = 2
     task_variance = 0
     common_depot = True
     total_budget = 8000
-    for n_agents in [ 4, 5]:
+    for n_agents in [ 2, 3, 4, 5]:
         # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
         budget = int(total_budget/n_agents)
         run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping)
@@ -779,15 +777,20 @@ if __name__ == '__main__':
         budget = int(total_budget/n_agents)
         run_trajalloc_experiment("FlatTerrainNature", "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping)
     
-    # for n_agents in [2, 3, 4, 5]:
-    #     # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
-    #     budget = int(total_budget/n_agents)
-    #     run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping)
+    for n_agents in [ 2, 3, 4, 5]:
+        # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
+        budget = int(total_budget/n_agents)
+        run_trajalloc_experiment("FlatTerrainNature", "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping)
     
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_inforamtion_reward_agents_3_capacity_2666_20241111_105605/20241111_105605.pkl")
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_reward_shaping_agents_3_capacity_2666_20241111_101419/20241111_101419.pkl")
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl")
 
+if __name__ == '__main__':
+    dataset_dir = "data/DemaScenariosTasks"
+    environment_file = "FlatTerrainNature"
+    # generate_dataset(environment_file,40,200, True)
+    # plot_information_gain_histogram(dataset_dir)
+    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241111_223622/20241111_223622.pkl")
+    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl")
+    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241111_150055/20241111_150055.pkl")
+    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
     # run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file)
     
