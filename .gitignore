@@ -5,4 +5,3 @@ data/gpxz_api_key.txt
 __pycache__/
 __MACOSX/
 .venv/
-experiments/

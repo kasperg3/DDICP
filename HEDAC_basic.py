@@ -358,7 +358,7 @@ class HEDAC_basic():
                     xa.append(_xa)
                     ya.append(_ya)
 
-            print('%.5f %8.4e' % (self.t, self.E[-1]))
+            # print('%.5f %8.4e' % (self.t, self.E[-1]))
 
 
     def smc_search(self):
@@ -463,7 +463,6 @@ class HEDAC_basic():
             print('%.5f %8.4e' % (self.t, self.E[-1]))
 
     def plot_solution(self):
-
         plt.figure(figsize=(20, 12))
         gs1 = gridspec.GridSpec(2, 3)
         gs1.update(left=0.02, right=0.98, wspace=0.17, hspace=0.1, top=0.97, bottom=0.05)
