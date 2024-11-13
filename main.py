@@ -26,6 +26,7 @@ import threading
        
 import contextily as cx
 from trajgenpy import Utils
+import seaborn as sns
 
 
 def plot_information_gain_histogram(dataset_dir):
@@ -103,10 +104,10 @@ def compute_trajectories(image, n_trajectories,steps = 100, sensor_variance=2, e
     test.outputStep = -1 #test.T.shape[0]-1 # Output the results at the last time step
     if common_depot:
         point = sample_points(image, 1)
-        point_list = []
+        initial_positions = []
         for _ in range(n_trajectories):
-            point_list.extend([(p[0] + np.random.normal(0, 2), p[1] + np.random.normal(0, 2)) for p in point])
-        test.agents =point_list
+            initial_positions.extend([(p[0] + np.random.normal(0, 2), p[1] + np.random.normal(0, 2)) for p in point])
+        test.agents =initial_positions
     else:
         test.agents = sample_points(image, n_trajectories)
     
@@ -319,14 +320,37 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
     
     x, y = np.meshgrid(np.arange(heatmap.shape[1]), np.arange(heatmap.shape[0]))
     global_sensor_mask = np.zeros_like(heatmap, dtype=bool)
+    
+    # Make sure that the information gain is calculated correctly
+    interpolated_trajectories = []
     for trajectory in trajectories:
+        interpolated_trajectory = []
+        for i in range(1, len(trajectory)):
+            interpolated_trajectory.append(trajectory[i-1])
+            distance = np.linalg.norm(np.array(trajectory[i]) - np.array(trajectory[i-1]))
+            if distance > 0.5 * sensor_range:
+                num_interpolations = int(distance // (0.5 * sensor_range))
+                for j in range(1, num_interpolations + 1):
+                    interpolated_point = np.array(trajectory[i-1]) + (np.array(trajectory[i]) - np.array(trajectory[i-1])) * (j / (num_interpolations + 1))
+                    interpolated_trajectory.append(interpolated_point)
+        interpolated_trajectory.append(trajectory[-1])
+        interpolated_trajectories.append(interpolated_trajectory)
+    trajectories = interpolated_trajectories
+    
+    for trajectory in interpolated_trajectories:
         timer = 0
         local_sensor_mask = np.zeros_like(heatmap, dtype=bool)
         local_information_gain = 0
-        for i in range(1, len(trajectory)):
+
+        for i in range(0, len(trajectory)):
             # Calculate the time it takes to traverse the trajectory
             agent_position = np.array(trajectory[i])
-            distance = np.linalg.norm(agent_position - np.array(trajectory[i-1]))
+
+            if i == 0:
+                distance = 0
+            else:
+                distance = np.linalg.norm(agent_position - np.array(trajectory[i-1]))
+            
             time_to_traverse = distance / 5  # Assuming constant velocity of 5 m/s
             timer += time_to_traverse
             for survivor in survivors_world_coords:
@@ -421,14 +445,30 @@ def plot_on_map(experiment_data, tasks, travel, eval, path, title):
     # plt.show()
     plt.close()
 
-def plot_result(show_survivors, experiment_data, tasks, travel, eval, path,title, show=True):
+def plot_result(show_survivors, experiment_data, tasks, travel,trajectories, eval, path,title, show=True):
     
-    show_survivors = True
+    show_survivors = False
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
     
     # Plot agent routes
     axs[0].ticklabel_format(style='plain', axis='both', useOffset=True, useMathText=True, scilimits=(0, 0))
     colors = plt.cm.get_cmap('tab10', len(tasks))
+
+    # For hedac results
+    # if not isinstance(tasks, dict):
+    #     tasks = {i: [route.trajectory] for i, route in enumerate(tasks)}
+    # if not isinstance(travel, dict):
+    #     travel = {i: [segment] for i, segment in enumerate(travel)}
+    # if not isinstance(trajectories, dict):
+    #     trajectories = {i: [trajectory] for i, trajectory in enumerate(trajectories)}
+    # for trajectory in trajectories.values():
+    #     initial_position = trajectory[0][0]
+    #     axs[0].plot(initial_position[0], initial_position[1], 'x', color='black', markersize=10)
+    
+    # For allocation results
+    # for trajectory in trajectories.values():
+    #     initial_position = trajectory[0]
+    #     axs[0].plot(initial_position[0], initial_position[1], 'x', color='black', markersize=10)
     
     for i, route in enumerate(tasks.values()):
         for segment in route:
@@ -443,6 +483,7 @@ def plot_result(show_survivors, experiment_data, tasks, travel, eval, path,title
             x, y = zip(*segment)
             axs[0].plot(x, y, linestyle=':', alpha=0.5, color=colors(i))
 
+    show_survivors = True
     if show_survivors:
         for i, survivor in enumerate(eval.survivors_location):
             axs[0].plot(survivor[0], survivor[1], 'o', color='red')
@@ -561,7 +602,7 @@ def run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,
     result_df.to_pickle(os.path.join(experiment_dir, f"hedac_agents_{n_agents}_capacity_{task_length}.pkl"))
 
         
-def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_capacity, sensor_range, sensor_variance, reward_shaping:callable):
+def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_capacity, sensor_range, sensor_variance, reward_shaping:callable, common_depot=True):
     # Comment this out to generate the dataset
     # generate_dataset(environment_file,40,200, True)
     # exit(0)
@@ -573,7 +614,6 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
     # alter the tasks length to follow a mean and variance of a certain task length
     mean_length = 100*4  # Each iteration consists of 4 steps (ODE discretisation)
     variance_length = (20 / 2) ** 2
-    common_depot = True
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = f"experiments/{environment_file}/{environment_file}_allocation_{title}_agents_{number_of_agents}_capacity_{agent_capacity}_{timestamp}/"
     os.makedirs(experiment_dir, exist_ok=True)
@@ -612,10 +652,12 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
         print(f"Total reward: {total_reward}")
         
         if common_depot:
+            
             initial =sample_points(experiment.heatmap, 1)[0]
-            initial = image_to_world(initial[0], initial[1], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer)
+            # TODO CHECK IF THIS SAMPLES THE RIGHT WAY
+            initial = image_to_world(initial[1], initial[0], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer)
             agent_list = [
-                Agent.config(id, (initial[0] + random.uniform(-10, 10), initial[1] + random.uniform(-10, 10)), capacity=agent_capacity, max_velocity=10)
+                Agent.config(id, (initial[0] + np.random.normal(0, 2), initial[1] + np.random.normal(0, 2)), capacity=agent_capacity, max_velocity=10)
                 for id in range(number_of_agents)
             ]
         else:
@@ -623,7 +665,7 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
             points = [image_to_world(p[0], p[1], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer) for p in points]
             points = sample_points(experiment.heatmap, number_of_agents)
             agent_list = [
-                Agent.config(id,p, capacity=agent_capacity, max_velocity=10)
+                Agent.config(id,p, capacity=agent_capacity, max_velocity=5)
                 for p in points
             ]
 
@@ -687,6 +729,7 @@ def evaluate_results(experiment_file):
         #     experiment_data=row[1]['experiment_data'],
         #     tasks=row[1]['tasks'],
         #     travel=row[1]['travel'],
+        #     trajectories=row[1]['trajectories'],
         #     eval=row[1]['evaluation'],
         #     path=experiment_dir + "/",
         #     title=row[0],
@@ -695,7 +738,6 @@ def evaluate_results(experiment_file):
         information_time_samples.append(row[1]["information_time"])
         global_information_samples.append(row[1]["global_information_gain"])
 
-    
     # Compute the cumulative information gain for each sample
     cumulative_information_samples = [np.cumsum(global_info) for global_info in global_information_samples]
 
@@ -719,38 +761,31 @@ def evaluate_results(experiment_file):
                      color='b', alpha=0.2, label='95% Confidence Interval')
     plt.xlabel('Time [s]')
     plt.ylabel('Cumulative Information Gain [%]')
-    plt.title('Mean Cumulative Information Gain Over Time with 95% Confidence Interval')
+    # plt.title('Mean Cumulative Information Gain Over Time with 95% Confidence Interval')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(experiment_dir + "/mean_cumulative_information_gain.png")
     # plt.show()
     plt.close()
+
     # Plot the mean number of survivors found over time with confidence interval
     all_survivors_found_time = []
     for row in df.iterrows():
         all_survivors_found_time.append(row[1]["survivors_found_time"])
-    
-    # # Calculate the mean time for detecting the survivors, including a 95% confidence interval
-    def calculate_detection_time(survivors_found_time, num_survivors):
-        detection_times = [sorted(times)[:num_survivors] for times in survivors_found_time if len(times) >= num_survivors]
+
+    for num_survivors in [5, 20, 50, 75]:
+        detection_times = [sorted(times)[:num_survivors] for times in all_survivors_found_time if len(times) >= num_survivors]
         detection_times = [times[-1] for times in detection_times]
         mean_detection_time = np.mean(detection_times)
         std_detection_time = np.std(detection_times)
         confidence_interval_detection = 1.96 * std_detection_time / np.sqrt(len(detection_times))
-        return mean_detection_time, confidence_interval_detection
-
-    for num_survivors in [5, 20, 50, 75]:
-        mean_time, ci = calculate_detection_time(all_survivors_found_time, num_survivors)
-        print(f"Mean time for detecting the first {num_survivors} survivors: {mean_time:.2f} seconds")
-        print(f"95% confidence interval: ±{ci:.2f} seconds")
-    
-    def calculate_cumulative_information_gain(mean_information_time, mean_cumulative_information, time):
-        return mean_cumulative_information[np.searchsorted(mean_information_time, time)], confidence_interval[np.searchsorted(mean_information_time, time)]
-    
-    for time in [100, 500, 1000]:
-        cumulative_information_at_time, ci = calculate_cumulative_information_gain(mean_information_time, mean_cumulative_information, time)
-        print(f"Mean cumulative information gain at {time} seconds: {cumulative_information_at_time:.2f} ± {ci:.2f}")
+        mean_detection_time, confidence_interval_detection
+        print(f"Mean time for detecting the first {num_survivors} survivors: {mean_detection_time:.2f} seconds")
+        print(f"95% confidence interval: ±{confidence_interval_detection:.2f} seconds")
+    # for time in [100, 500, 1000]:
+    #     cumulative_information_at_time=mean_cumulative_information[np.searchsorted(mean_information_time, time)], confidence_interval[np.searchsorted(mean_information_time, time)]
+    #     print(f"Mean cumulative information gain at {time} seconds: {cumulative_information_at_time:.2f} ± {ci:.2f}")
 
 def no_shaping(reward):
     return reward
@@ -767,30 +802,133 @@ def run_allocation_experiments():
     task_variance = 0
     common_depot = True
     total_budget = 8000
-    for n_agents in [ 2, 3, 4, 5]:
-        # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
+    # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
+    for n_agents in [ 5]:
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping)
+        run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping, common_depot)
         
     for n_agents in [ 2, 3, 4, 5]:
-        # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping)
+        run_trajalloc_experiment("FlatTerrainNature", "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping, common_depot)
     
     for n_agents in [ 2, 3, 4, 5]:
-        # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping)
+        run_trajalloc_experiment("FlatTerrainNature", "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping, common_depot)
+
+def plot_comparrative_results(*experiment_files,legends =[]):
+    plt.figure(figsize=(10, 5))
+    for i, experiment_file in enumerate(experiment_files):
+        df = pd.read_pickle(experiment_file)
+        global_information_samples = []
+        information_time_samples = []
+        for row in df.iterrows():
+            information_time_samples.append(row[1]["information_time"])
+            global_information_samples.append(row[1]["global_information_gain"])
+
+        cumulative_information_samples = [np.cumsum(global_info) for global_info in global_information_samples]
+        max_length = max(len(sample) for sample in cumulative_information_samples)
+        padded_cumulative_information_samples = [np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in cumulative_information_samples]
+        mean_cumulative_information = np.mean(padded_cumulative_information_samples, axis=0)
+        std_cumulative_information = np.std(padded_cumulative_information_samples, axis=0)
+        confidence_interval = 1.96 * std_cumulative_information / np.sqrt(len(padded_cumulative_information_samples))
+
+        padded_information_time_samples = [np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in information_time_samples]
+        mean_information_time = np.mean(padded_information_time_samples, axis=0)
+        plt.plot(mean_information_time, mean_cumulative_information, label=legends[i])
+        plt.fill_between(mean_information_time, 
+                         mean_cumulative_information - confidence_interval, 
+                         mean_cumulative_information + confidence_interval, 
+                         alpha=0.2)
+        
+
+    plt.xlabel('Time [s]')
+    plt.ylabel('Cumulative Information Gain [%]')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("comparative_cumulative_information_gain.png")
+    plt.show()
     
+
+def plot_violine_plot():
+
+    experiment_files = [
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_2_capacity_4000_20241111_222133/20241111_222133.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241111_223622/20241111_223622.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241111_225137/20241111_225137.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_5_capacity_1600_20241111_230740/20241111_230740.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_2_capacity_4000_20241111_152641/20241111_152641.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241111_214659/20241111_214659.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_5_capacity_1600_20241111_220349/20241111_220349.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_2_capacity_4000_20241111_145319/20241111_145319.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241111_150055/20241111_150055.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241111_150838/20241111_150838.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_5_capacity_1600_20241111_151638/20241111_151638.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_2_capacity_4000_20241109_085823/hedac_agents_2_capacity_4000.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_5_capacity_1600_20241108_230402/hedac_agents_5_capacity_1600.pkl"
+    ]
+
+    categories = ["Exponential Shaping", "Information Reward", "Static Reward", "HEDAC"]
+    agent_counts = [2, 3, 4, 5]
+
+    data = []
+    timestamp_for_comparrison = 700
+    for i, experiment_file in enumerate(experiment_files):
+        global_information_samples = []
+        information_time_samples = []
+        df = pd.read_pickle(experiment_file)
+        for row in df.iterrows():
+            information_time_samples.append(row[1]["information_time"])
+            global_information_samples.append(row[1]["global_information_gain"])
+
+        cumulative_information_samples = [np.cumsum(global_info) for global_info in global_information_samples]
+        max_length = max(len(sample) for sample in cumulative_information_samples)
+        padded_cumulative_information_samples = [np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in cumulative_information_samples]
+        information_time = np.mean([np.pad(sample, (0, max_length - len(sample)), 'edge') for sample in information_time_samples], axis=0)
+        for sample in padded_cumulative_information_samples:
+            information_gain_at = sample[np.searchsorted(information_time, timestamp_for_comparrison)]
+            category = categories[i // 4]
+            agent_count = agent_counts[i % 4]
+            data.append([agent_count, category, information_gain_at])
+    df = pd.DataFrame(data, columns=["Agents", "Category", "Information gain"])
+    
+    plt.figure(figsize=(10, 5))
+    sns.set_palette("tab10")
+    sns.boxplot(x="Category", y="Information gain", hue="Agents", data=df)
+    plt.title("Mean Cumulative Information Gain at "+ str(timestamp_for_comparrison) + " seconds for Different Experiments")
+    plt.ylabel("Information gain")
+    plt.legend(title="Category")
+    # plt.tight_layout()
+    plt.savefig("boxplot_mean_cumulative_information_gain.png")
+    plt.show()
 
 if __name__ == '__main__':
     dataset_dir = "data/DemaScenariosTasks"
     environment_file = "FlatTerrainNature"
+    
+    # run_allocation_experiments()
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241113_120808/20241113_120808.pkl")
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl")
+    # plot_violine_plot()
+    # plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241113_083943/20241113_083943.pkl",
+    #                           "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241111_214659/20241111_214659.pkl",
+    #                           "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241111_150838/20241111_150838.pkl",
+    #                           "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl"
+    #                           ,legends=["Exponential Shaping","Information Reward","Static Reward","HEDAC"])
+    
+    # plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241113_120808/20241113_120808.pkl",
+    #                         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl"
+    #                         ,legends=["No Shaping","HEDAC"])
+    
+    
     # generate_dataset(environment_file,40,200, True)
     # plot_information_gain_histogram(dataset_dir)
-    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241111_223622/20241111_223622.pkl")
-    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl")
-    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241111_150055/20241111_150055.pkl")
-    evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241111_223622/20241111_223622.pkl")
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl")
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241111_150055/20241111_150055.pkl")
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
     # run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file)
     
