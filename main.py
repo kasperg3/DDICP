@@ -483,7 +483,6 @@ def plot_result(show_survivors, experiment_data, tasks, travel,trajectories, eva
             x, y = zip(*segment)
             axs[0].plot(x, y, linestyle=':', alpha=0.5, color=colors(i))
 
-    show_survivors = True
     if show_survivors:
         for i, survivor in enumerate(eval.survivors_location):
             axs[0].plot(survivor[0], survivor[1], 'o', color='red')
@@ -652,9 +651,7 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
         print(f"Total reward: {total_reward}")
         
         if common_depot:
-            
             initial =sample_points(experiment.heatmap, 1)[0]
-            # TODO CHECK IF THIS SAMPLES THE RIGHT WAY
             initial = image_to_world(initial[1], initial[0], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer)
             agent_list = [
                 Agent.config(id, (initial[0] + np.random.normal(0, 2), initial[1] + np.random.normal(0, 2)), capacity=agent_capacity, max_velocity=10)
@@ -803,7 +800,7 @@ def run_allocation_experiments():
     common_depot = True
     total_budget = 8000
     # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
-    for n_agents in [ 5]:
+    for n_agents in [ 2, 3, 4, 5]:
         budget = int(total_budget/n_agents)
         run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping, common_depot)
         
@@ -816,7 +813,7 @@ def run_allocation_experiments():
         run_trajalloc_experiment("FlatTerrainNature", "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping, common_depot)
 
 def plot_comparrative_results(*experiment_files,legends =[]):
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 10))
     for i, experiment_file in enumerate(experiment_files):
         df = pd.read_pickle(experiment_file)
         global_information_samples = []
@@ -846,36 +843,36 @@ def plot_comparrative_results(*experiment_files,legends =[]):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig("comparative_cumulative_information_gain.png")
+    plt.savefig("data/plots/comparative_cumulative_information_gain.png")
     plt.show()
     
 
-def plot_violine_plot():
+def plot_information_gathered():
 
     experiment_files = [
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_2_capacity_4000_20241111_222133/20241111_222133.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241111_223622/20241111_223622.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241111_225137/20241111_225137.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_5_capacity_1600_20241111_230740/20241111_230740.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_2_capacity_4000_20241111_152641/20241111_152641.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241111_154436/20241111_154436.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241111_214659/20241111_214659.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_5_capacity_1600_20241111_220349/20241111_220349.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_2_capacity_4000_20241111_145319/20241111_145319.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241111_150055/20241111_150055.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241111_150838/20241111_150838.pkl",
-        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_5_capacity_1600_20241111_151638/20241111_151638.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_2_capacity_4000_20241113_125852/20241113_125852.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241113_131536/20241113_131536.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241113_133333/20241113_133333.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_5_capacity_1600_20241113_135052/20241113_135052.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_2_capacity_4000_20241114_070149/20241114_070149.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241114_072400/20241114_072400.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241114_074813/20241114_074813.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_5_capacity_1600_20241114_080740/20241114_080740.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_2_capacity_4000_20241113_140924/20241113_140924.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241113_142608/20241113_142608.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241113_144350/20241113_144350.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_5_capacity_1600_20241113_150232/20241113_150232.pkl",
         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_2_capacity_4000_20241109_085823/hedac_agents_2_capacity_4000.pkl",
         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl",
         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl",
         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_5_capacity_1600_20241108_230402/hedac_agents_5_capacity_1600.pkl"
     ]
 
-    categories = ["Exponential Shaping", "Information Reward", "Static Reward", "HEDAC"]
+    categories = ["Exponential Reward Shaping", "Information Reward", "Static Reward", "HEDAC"]
     agent_counts = [2, 3, 4, 5]
 
     data = []
-    timestamp_for_comparrison = 700
+    timestamp_for_comparrison = 600
     for i, experiment_file in enumerate(experiment_files):
         global_information_samples = []
         information_time_samples = []
@@ -893,35 +890,100 @@ def plot_violine_plot():
             category = categories[i // 4]
             agent_count = agent_counts[i % 4]
             data.append([agent_count, category, information_gain_at])
-    df = pd.DataFrame(data, columns=["Agents", "Category", "Information gain"])
+    df = pd.DataFrame(data, columns=["Agents", "Method", "Information gain"])
     
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 10))
     sns.set_palette("tab10")
-    sns.boxplot(x="Category", y="Information gain", hue="Agents", data=df)
+    # sns.violinplot(x="Agents", y="Information gain", hue="Method", data=df)
+    sns.boxplot(x="Agents", y="Information gain", hue="Method", data=df)
     plt.title("Mean Cumulative Information Gain at "+ str(timestamp_for_comparrison) + " seconds for Different Experiments")
     plt.ylabel("Information gain")
-    plt.legend(title="Category")
-    # plt.tight_layout()
-    plt.savefig("boxplot_mean_cumulative_information_gain.png")
-    plt.show()
+    plt.legend(title="Method")
+    plt.ylim(0, 1.2)
+    plt.tight_layout()
+    plt.savefig("data/plots/boxplot_mean_cumulative_information_gain.png")
+    # plt.show()
+
+def plot_percent_survivors_detected():
+    experiment_files = [
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_2_capacity_4000_20241113_125852/20241113_125852.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_3_capacity_2666_20241113_131536/20241113_131536.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241113_133333/20241113_133333.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_5_capacity_1600_20241113_135052/20241113_135052.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_2_capacity_4000_20241114_070149/20241114_070149.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241114_072400/20241114_072400.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241114_074813/20241114_074813.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_5_capacity_1600_20241114_080740/20241114_080740.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_2_capacity_4000_20241113_140924/20241113_140924.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_3_capacity_2666_20241113_142608/20241113_142608.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241113_144350/20241113_144350.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_5_capacity_1600_20241113_150232/20241113_150232.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_2_capacity_4000_20241109_085823/hedac_agents_2_capacity_4000.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl",
+        "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_5_capacity_1600_20241108_230402/hedac_agents_5_capacity_1600.pkl"
+    ]
+
+    categories = ["Exponential Reward Shaping", "Information Reward", "Static Reward", "HEDAC"]
+    agent_counts = [2, 3, 4, 5]
+    n_detections = 75    
+    data = []
+    for i, experiment_file in enumerate(experiment_files):
+        df = pd.read_pickle(experiment_file)
+        
+        # Plot the mean number of survivors found over time with confidence interval
+        all_survivors_found_time = []
+        for row in df.iterrows():
+            all_survivors_found_time.append(row[1]["survivors_found_time"])
+
+        detection_times = [sorted(times)[:n_detections] for times in all_survivors_found_time if len(times) >= n_detections]
+        detection_times = [times[-1] for times in detection_times]
+        mean_detection_time = np.mean(detection_times)
+        std_detection_time = np.std(detection_times)
+        confidence_interval_detection = 1.96 * std_detection_time / np.sqrt(len(detection_times))
+        mean_detection_time, confidence_interval_detection
+        print(f'Experiment: {experiment_file}')
+        print(f'agents: {agent_counts[i % 4]} method: {categories[i // 4]}')
+        print(f"Mean time for detecting the first {n_detections} survivors: {mean_detection_time:.2f} seconds")
+        print(f"95% confidence interval: ±{confidence_interval_detection:.2f} seconds")
+        
+        for detection_time in detection_times:
+            category = categories[i // 4]
+            agent_count = agent_counts[i % 4]
+            data.append([agent_count, category, detection_time])
+    df = pd.DataFrame(data, columns=["Agents", "Method", "Detection time"])
+    
+    plt.figure(figsize=(10, 10))
+    sns.set_palette("tab10")
+    # sns.pointplot(x="Agents", y="Detection time", hue="Method", data=df, dodge=True, join=False, ci="sd", markers=["o", "s", "D", "^"], capsize=.1)
+    # sns.violinplot(x="Agents", y="Detection time", hue="Method", data=df)
+    sns.boxplot(x="Agents", y="Detection time", hue="Method", data=df)
+    plt.title(f"Mean time for detecting the first {n_detections} survivors for Different Experiments")
+    plt.ylabel("Time [s]")
+    plt.legend(title="Method")
+    # plt.ylim(0, 1000)
+    plt.tight_layout()
+    plt.savefig("data/plots/boxplot_mean_detection_time.png")
+    # plt.show()
+
 
 if __name__ == '__main__':
     dataset_dir = "data/DemaScenariosTasks"
     environment_file = "FlatTerrainNature"
-    
     # run_allocation_experiments()
     # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241113_120808/20241113_120808.pkl")
     # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl")
-    # plot_violine_plot()
+    plot_information_gathered()
+    plot_percent_survivors_detected()
     # plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241113_083943/20241113_083943.pkl",
     #                           "experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_4_capacity_2000_20241111_214659/20241111_214659.pkl",
     #                           "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241111_150838/20241111_150838.pkl",
     #                           "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl"
     #                           ,legends=["Exponential Shaping","Information Reward","Static Reward","HEDAC"])
     
-    # plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_information_reward_agents_3_capacity_2666_20241113_120808/20241113_120808.pkl",
-    #                         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl"
-    #                         ,legends=["No Shaping","HEDAC"])
+    plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241113_133333/20241113_133333.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl"
+                            ,legends=["itCBBA","HEDAC"])
     
     
     # generate_dataset(environment_file,40,200, True)
