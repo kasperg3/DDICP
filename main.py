@@ -12,7 +12,6 @@ import pandas as pd
 import shapely
 from shapely.geometry import LineString
 from trajallocpy import Agent, CoverageProblem, Experiment, Task
-
 import environment_modelling
 import HEDAC_basic
 
@@ -103,7 +102,7 @@ def task_allocation(boundary, tasks, agent_list):
         tasks=tasks,
     )
 
-    exp = Experiment.Runner(coverage_problem=cp, agents=agent_list)
+    exp = Experiment.Runner(coverage_problem=cp, agents=agent_list, enable_plotting=False)
 
     exp.solve(profiling_enabled=False)
     (
@@ -131,7 +130,7 @@ class ExperimentData:
     buffer: float
     meter_per_bin: float
     
-
+# TODO Add this function to the Environment modelling
 def generate_dataset(environment_file, n_trajectories, steps,experiment_dir, generate_all=True, common_depot=False):
     # Create a new environment
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
@@ -186,7 +185,6 @@ def generate_dataset(environment_file, n_trajectories, steps,experiment_dir, gen
                 min_y=env.miny, 
                 buffer=env.buffer, 
                 meter_per_bin=env.meter_per_bin
-                # TODO Include the sensor model used in HEDAC
             )
 
             # Save the instance to a pickle file
@@ -486,7 +484,6 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
         else:
             points = sample_points(experiment.heatmap, number_of_agents)
             points = [image_to_world(p[0], p[1], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer) for p in points]
-            points = sample_points(experiment.heatmap, number_of_agents)
             agent_list = [
                 Agent.config(id,p, capacity=agent_capacity, max_velocity=5)
                 for p in points
@@ -542,12 +539,12 @@ def no_shaping(reward):
     return reward
 
 def exponential_shaping(reward):
-    return math.exp(reward)
+    return math.exp(reward*5)
 
 def static_reward_shaping(reward):
     return 1
 
-def run_allocation_experiments():
+def run_allocation_experiments(environment_file):
     sensor_range = 10
     sensor_variance = 2
     task_variance = 0
@@ -556,20 +553,151 @@ def run_allocation_experiments():
     # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
     for n_agents in [ 2, 3, 4, 5]:
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping, common_depot)
+        run_trajalloc_experiment(environment_file, "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping, common_depot)
         
     for n_agents in [ 2, 3, 4, 5]:
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping, common_depot)
+        run_trajalloc_experiment(environment_file, "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping, common_depot)
     
     for n_agents in [ 2, 3, 4, 5]:
         budget = int(total_budget/n_agents)
-        run_trajalloc_experiment("FlatTerrainNature", "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping, common_depot)
+        run_trajalloc_experiment(environment_file, "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping, common_depot)
+
+import trajgenpy
+import json
+import matplotlib.pyplot as plt
+def generate_sweep_tasks(polygon_file, distance_between_sweeps):
+    print("Generating sweep tasks")
+    base_path = "data/DemaScenarios/"
+    environment_file = "FlatTerrainNature"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = f"experiments/{environment_file}/{timestamp}/"
+        
+    with open(polygon_file, "r") as f:
+        data = json.load(f)
+    coordinates = data["features"][0]["geometry"]["coordinates"][0]
+    query_region = trajgenpy.Geometries.GeoPolygon(shapely.Polygon(coordinates))
+    query_region = query_region.set_crs("EPSG:2197")
+    
+    polygons = trajgenpy.Geometries.decompose_polygon(query_region.geometry, None)
+    task_geoms = []
+    for polygon in polygons:
+        task_geoms.extend(trajgenpy.Geometries.generate_sweep_pattern(polygon, distance_between_sweeps))
+    
+    # Create the heatmap: 
+    env = environment_modelling.EnvironmentBuilder().set_polygon_file(base_path + environment_file + ".geojson").set_feature(
+        "wetlands", {"natural": ["water", "wetland"]}
+    ).set_feature(
+        "roads",
+        {
+            "highway": [
+                "service",
+                "track",
+                "highway",
+                "primary",
+                "secondary",
+                "tertiary",
+                "residential",
+            ]
+        },
+    ).set_buffer(0).build()
+    
+    # tasks = [Task.TrajectoryTask(i, task, reward=1) for i, task in enumerate(tasks)]
+
+    # Parse these parameters from the func
+    sigma_wetland = get_filter_sigma(10, env)
+    sigma_roads = get_filter_sigma(30, env)
+
+    sigma_features = {"roads": sigma_roads, "wetlands": sigma_wetland}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
+
+    combined_heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
+    tasks = []
+    sensor_range = 10
+    for i, geom in enumerate(task_geoms):
+        # interpolated_points = []
+        # for i in range(1, len(geom.coords)):
+        #     interpolated_points.append(geom.coords[i-1])
+        #     distance = np.linalg.norm(np.array(geom.coords[i]) - np.array(geom.coords[i-1]))
+        #     if distance > sensor_range/2:
+        #         num_interpolations = int(distance // sensor_range)
+        #         for j in range(1, num_interpolations + 1):
+        #             interpolated_point = np.array(geom.coords[i-1]) + (np.array(geom.coords[i]) - np.array(geom.coords[i-1])) * (j / (num_interpolations + 1))
+        #             interpolated_points.append(interpolated_point)
+        # interpolated_points.append(geom.coords[-1])
+        # geom = LineString(interpolated_points)
+        # image_coords = [world_to_image(p[0], p[1], env.meter_per_bin, env.minx, env.miny, env.buffer) for p in geom.coords]
+        reward =1# exponential_shaping(information_gain_from_points(image_coords, combined_heatmap, sensor_range, 2))
+        task = Task.TrajectoryTask(i, geom, reward=reward)
+        tasks.append(task)
+    experiment = ExperimentData(combined_heatmap,tasks,env.polygon.geometry,env.minx,env.miny,env.buffer,env.meter_per_bin)
+    with open(f'data/SweepTasks/{environment_file}_sweep_tasks.pkl', 'wb') as f:
+        pickle.dump(experiment, f)
+
+    sensor_variance = 2
+    mean_length = 100*4  # Each iteration consists of 4 steps (ODE discretisation)
+    result_list ={}
+    for number_of_agents in [2,3,4,5]:
+        agent_capacity = int(8000/number_of_agents)
+        experiment_dir = "experiments/" + environment_file +"_sweep_tasks_agents_" + str(number_of_agents) + "_capacity_" + str(agent_capacity)
+        for i in range(40): 
+            experiment_name = environment_file + "_sweep_tasks_" + str(i)
+            initial =sample_points(experiment.heatmap, 1)[0]
+            initial = image_to_world(initial[1], initial[0], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer)
+            agent_list = [
+                Agent.config(id, (initial[0] + np.random.normal(0, 2), initial[1] + np.random.normal(0, 2)), capacity=agent_capacity, max_velocity=10)
+                for id in range(number_of_agents)
+            ]
+
+            start_time = datetime.datetime.now()
+            allocation = task_allocation(experiment.boundary, tasks,agent_list)
+            end_time = datetime.datetime.now()
+            elapsed_time = end_time - start_time
+            print(f"Task allocation for experiment {experiment_name} took {elapsed_time.total_seconds()} seconds")
+            
+            eval= evaluate_experiment(heatmap=experiment.heatmap,
+                                        trajectories=list(allocation.routes.values()),
+                                        sensor_range=sensor_range, 
+                                        sensor_variance=sensor_variance,
+                                        task_length_mean=0,
+                                        task_length_variance=0,
+                                        number_of_agents=number_of_agents,
+                                        agent_capacity=agent_capacity,
+                                        experiment_data=experiment)
+            
+            result_list[experiment_name] = {
+                "heatmap": experiment.heatmap,
+                "trajectories": allocation.routes,
+                "travel": allocation.transport,
+                "tasks": allocation.tasks,
+                "sensor_range": sensor_range,
+                "sensor_variance": sensor_variance,
+                "task_length_mean": mean_length,
+                "task_length_variance": 0,
+                "number_of_agents": number_of_agents,
+                "agent_capacity": agent_capacity,
+                "experiment_data": experiment,
+                "survivors_location": eval.survivors_location,
+                "survivors_found_location": eval.survivors_found_location,
+                "survivors_found_time": eval.survivors_found_time,
+                "information_time": eval.information_time,
+                "local_information_gain": eval.local_information_gain,
+                "global_information_gain": eval.global_information_gain,
+                "evaluation": eval,      
+                "compute_time":elapsed_time.total_seconds()
+            }
+
+        result_df = pd.DataFrame.from_dict(result_list, orient='index')
+        os.makedirs(experiment_dir, exist_ok=True)
+        result_df.to_pickle(os.path.join(experiment_dir, f"{timestamp}.pkl"))
+
 
 if __name__ == '__main__':
     dataset_dir = "data/DemaScenariosTasks"
     environment_file = "FlatTerrainNature"
-    # run_allocation_experiments()
+    # Distance between sweeps should be 20 to match the trajectory generation
+    # generate_sweep_tasks("data/DemaScenarios/FlatTerrainNature.geojson", 20)
+    run_allocation_experiments(environment_file)
     # generate_dataset(environment_file,40,200, True)
     # run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file)
     
