@@ -18,10 +18,17 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Slider
 import matplotlib.colors as mcolors
 from PIL import Image
+from trajallocpy import Agent, CoverageProblem, Experiment, Task
+from dataclasses import dataclass
+from typing import List
+import pickle
 from sklearn.metrics.pairwise import rbf_kernel
 log = trajgenpy.Logging.get_logger()
 
-
+import datetime
+import HEDAC_basic
+    
+    
 class EnvironmentBuilder:
     def __init__(self):
         self.polygon_file = None
@@ -60,6 +67,17 @@ class EnvironmentBuilder:
         )
 
 
+def image_to_world(x, y, meters_per_bin, minx, miny, buffer):
+    x = x* meters_per_bin + minx - buffer
+    y = y* meters_per_bin + miny - buffer
+    return x, y
+
+def world_to_image(x, y, meters_per_bin, minx, miny, buffer):
+    x = (x - minx + buffer) / meters_per_bin
+    y = (y - miny + buffer) / meters_per_bin
+    return int(x), int(y)#Figure out if this rounding is bad
+
+
 class Environment:
     def __init__(self, polygon_file, sample_distance, meter_per_bin, buffer, tags):
         self.polygon_file = polygon_file
@@ -85,14 +103,14 @@ class Environment:
         log.info("Number of bins x: %i y: %i", num_bins_x, num_bins_y)
         self.xedges = np.linspace(self.minx - self.buffer, self.maxx + self.buffer, num_bins_x + 1)
         self.yedges = np.linspace(self.miny - self.buffer, self.maxy + self.buffer, num_bins_y + 1)
-        # 
+        print(f"Size of x edges: {len(self.xedges)}")
+        print(f"Size of y edges: {len(self.yedges)}")
 
         for key in tags.keys():
             feature = query_features(
                 GeoPolygon(query_region),
                 tags[key],
             )
-            
             
             feature_collection = [geom for feature in feature.values() for geom in feature.geoms]
             if all(isinstance(geom, shapely.geometry.Polygon) for geom in feature_collection):
@@ -102,18 +120,13 @@ class Environment:
             else:
                 raise ValueError("Invalid feature type in feature collection")
             self.heatmaps[key] = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
-            
             self.features[key] = feature_geom
 
     def image_to_world(self, x, y):
-        x = x* self.meter_per_bin + self.minx - self.buffer
-        y = y* self.meter_per_bin + self.miny - self.buffer
-        return x, y
+        return image_to_world(x, y, self.meter_per_bin, self.minx, self.miny, self.buffer)
     
     def world_to_image(self, x, y):
-        x = (x - self.minx + self.buffer) / self.meter_per_bin
-        y = (y - self.miny + self.buffer) / self.meter_per_bin
-        return x, y
+        return world_to_image(x, y, self.meter_per_bin, self.minx, self.miny, self.buffer)
 
     # Function to interpolate points on the line
     def interpolate_line(self, line, distance):
@@ -128,6 +141,7 @@ class Environment:
     # # Apply the heatmap generation to all road lines
     def generate_heatmap(self, geometry_collection, sample_distance, infill_geometries = True):
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
+        x_y_combinations = np.array(np.meshgrid(self.xedges, self.yedges)).T.reshape(-1, 2)
         for feature in geometry_collection.geoms:
             interpolated_points = []
             if isinstance(feature, LineString):
@@ -136,13 +150,15 @@ class Environment:
             elif isinstance(feature, shapely.geometry.Polygon):        
                 if infill_geometries:
                     # Check if all combinations of xedges and yedges are inside the polygon
-                    x_y_combinations = np.array(np.meshgrid(self.xedges, self.yedges)).T.reshape(-1, 2)
                     mask = np.array([feature.contains(shapely.geometry.Point(x, y)) for x, y in x_y_combinations])
                     interpolated_points.extend([shapely.geometry.Point(x, y) for (x, y), m in zip(x_y_combinations, mask) if m])
                 else:
                     line = feature.exterior
                     interpolated_points = self.interpolate_line(line, sample_distance)
-                
+                    
+            # No intersection between the points and the polygon/line
+            if not interpolated_points: 
+                continue
             x, y = zip(*[(point.x, point.y) for point in interpolated_points])
             
             temp_heatmap, _, _ = np.histogram2d(x, y, bins=(self.xedges, self.yedges))
@@ -200,6 +216,7 @@ class Environment:
         ax.set_xlim(self.minx - self.buffer, self.maxx + self.buffer)
         ax.set_ylim(self.miny - self.buffer, self.maxy + self.buffer)
         if show_features:
+            self.polygon.plot(linestyle="--", facecolor="none", edgecolor="black")
             for key, feature in self.features.items():
                 if isinstance(feature, GeoMultiPolygon):
                     feature.plot()
@@ -241,8 +258,8 @@ class Environment:
                 ax_filter_slider = plt.axes([0.25, y_position, 0.25, 0.03])
                 ax_multiplier_slider = plt.axes([0.60, y_position, 0.25, 0.03])
                 
-                filter_sliders[key] = Slider(ax_filter_slider, f'{key}:  σ', 0.0, 10.0, valinit=3, valstep=0.1)
-                multiplier_sliders[key] = Slider(ax_multiplier_slider, 'α', 0.0, 3.0, valinit=1, valstep=0.1)
+                filter_sliders[key] = Slider(ax_filter_slider, f'{key}:  sigma', 0.0, 10.0, valinit=3, valstep=0.1)
+                multiplier_sliders[key] = Slider(ax_multiplier_slider, 'alpha', 0.0, 10.0, valinit=1, valstep=0.1)
             # Save button
             save_ax = plt.axes([0.5, 0.9, 0.1, 0.04])
             save_button = plt.Button(save_ax, 'Save', color='white', hovercolor='0.975')
@@ -251,9 +268,11 @@ class Environment:
                 sigma_features = {key: slider.val for key, slider in filter_sliders.items()}
                 alpha_features = {key: multiplier_sliders[key].val for key in filter_sliders.keys()}
                 combined_heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
-                
+                # for key in filter_sliders.keys():
+                #     print(f"{key} - sigma: {filter_sliders[key].val}, alpha: {multiplier_sliders[key].val}")
                 heatmap_img.set_data(combined_heatmap.T)
                 cbar.mappable.set_clim(vmin=combined_heatmap.min(), vmax=combined_heatmap.max())
+                heatmap_img.set_cmap(custom_cmap)
                 plt.draw()
 
             def save(event):
@@ -314,26 +333,295 @@ class Environment:
             plt.savefig("data/plots/plot.png",bbox_inches='tight')
         plt.show()
     
+def get_filter_sigma(filter_width_meters, env):
+    filter_width_pixels = filter_width_meters / env.meter_per_bin
+    
+    # Calculate the sigma value for the Gaussian filter
+    sigma = filter_width_pixels / (2 * np.sqrt(2 * np.log(2)))
+    return sigma
+
+
+@dataclass
+class ExperimentData:
+    heatmap: np.ndarray # Target distribution
+    tasks: List[Task.TrajectoryTask]
+    boundary: shapely.geometry.Polygon
+    min_x: float
+    min_y: float
+    buffer: float
+    meter_per_bin: float
+    computation_time: float = 0.0
+
+# TODO Add this function to the Environment modelling
+def generate_dataset(environment_file,features,sigma_features,alpha_features, n_trajectories, steps,experiment_dir=None, generate_all=True, common_depot=False):
+    # Create a new environment
+    # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
+    # polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
+    # polygon_file = "data/DemaScenarios/Urban.geojson"
+    # polygon_file = "data/DemaScenarios/Water.geojson"
+    base_path = "data/DemaScenarios/"
+    # environment_file = "FlatTerrainNature"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if experiment_dir is None:
+        experiment_dir = f"experiments/{environment_file}/{timestamp}/"
+    env_builder = EnvironmentBuilder().set_polygon_file(base_path + environment_file + ".geojson").set_buffer(10)
+    for key, feature in features.items():
+        env_builder.set_feature(key, feature)
+    env = env_builder.build()
+    combined_heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
+
+    if generate_all:
+        import concurrent.futures
+        def process_experiment(i):
+            start_time = datetime.datetime.now()
+            # Compute the trajectories inside the environment
+            paths = compute_trajectories(combined_heatmap, n_trajectories,steps, experiment_dir=f"data/DemaScenariosTasks/{environment_file}_{i}/", common_depot=common_depot)
+
+            tasks = [Task.TrajectoryTask(i, LineString(paths[i]), reward=1) for i in range(len(paths))]
+
+            end_time = datetime.datetime.now()
+            # Create an instance of the data class
+            experiment_data = ExperimentData(
+                heatmap=combined_heatmap, 
+                boundary=env.polygon.geometry,
+                tasks=tasks, 
+                min_x=env.minx, 
+                min_y=env.miny, 
+                buffer=env.buffer, 
+                meter_per_bin=env.meter_per_bin,
+                computation_time=(end_time - start_time).total_seconds()
+            )
+            print(f"Experiment {i} took {end_time - start_time}")
+            # Save the instance to a pickle file
+            print(f"Saving experiment data for {environment_file}_{i}")
+            with open(f'data/DemaScenariosTasks/{environment_file}_{i}/{environment_file}_{i}.pkl', 'wb') as f:
+                pickle.dump(experiment_data, f)
+                
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(process_experiment, i) for i in range(40)]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    import traceback
+                    print(f"Experiment failed with error: {e}")
+                    traceback.print_exc()
+    else:
+        # Compute the trajectories inside the environment
+        paths = compute_trajectories(combined_heatmap,n_trajectories, steps, experiment_dir=experiment_dir,common_depot=common_depot)
+
+        # tasks = []
+        # for i, point_list in enumerate(paths):
+        #     task_reward = information_gain_from_points(point_list, combined_heatmap, 10, 2)
+        #     temp_path = [image_to_world(p[0], p[1],env.meter_per_bin,env.minx,env.miny, env.buffer) for p in point_list]
+        #     tasks.append(Task.TrajectoryTask(i, LineString(temp_path), reward=task_reward))
+            
+        tasks = [Task.TrajectoryTask(i, LineString(paths[i]), reward=1) for i in range(len(paths))]
+
+        # Create an instance of the data class
+        experiment_data = ExperimentData(
+            heatmap=combined_heatmap, 
+            boundary=env.polygon.geometry,
+            tasks=tasks, 
+            min_x=env.minx, 
+            min_y=env.miny, 
+            buffer=env.buffer, 
+            meter_per_bin=env.meter_per_bin
+        )
+        return experiment_data
+
+
+def compute_trajectories(image, n_trajectories,steps = 100, sensor_variance=2, experiment_dir: str = "experiments/", common_depot=False):
+
+    image = np.array(image, dtype=np.float64).T
+    image_height, image_width = image.shape[:2]
+            
+    test = HEDAC_basic.HEDAC_basic()
+
+    test.method = 'hedac'
+    test.results_dir = experiment_dir
+    test.sigma_m = 1 # Envrionemtal variance, for smoothing environments
+    test.sigma_c = sensor_variance# agent sensor footprint variance
+
+    # test.method = 'smc'
+    # test.results_dir = 'experiments/smc_full'
+    # test.sigma_m = 1
+    # test.sigma_c = 2
+
+    test.X = np.arange(image.shape[1])
+    test.Y = np.arange(image.shape[0])
+    test.T = np.arange(steps)
+
+    test.samples = image
+    test.alpha = 1.0
+    test.beta = 0.5
+    test.gamma = 0.1
+    test.va = 1 # Step size for the agents, Do not change this, as this is the same as changing the number of timesteps
+    test.sigma_ac = 0.1
+    # test.kappa = 0.1
+    test.sourcefun = HEDAC_basic.difsource
+    # logsource, difsource, difsquaredsource, divsource, fullcoveragecource generate_difpowersource(0.5) generate_divpowersource(power=2.0)
+
+    test.outputStep = -1 #test.T.shape[0]-1 # Output the results at the last time step
+    if common_depot:
+        point = sample_points(image, 1)
+        initial_positions = []
+        for _ in range(n_trajectories):
+            initial_positions.extend([(p[0] + np.random.normal(0, 2), p[1] + np.random.normal(0, 2)) for p in point])
+        test.agents =initial_positions
+    else:
+        test.agents = sample_points(image, n_trajectories)
+    
+    # Use the function in the compute_trajectories function
+    test.search()
+    
+    # Export the paths to a dict with agent number and the path
+    paths = []
+    for i, (xa, ya) in enumerate(zip(test.XA, test.YA)):
+        # paths[i] = [env.image_to_world(x, y) for x, y in zip(xa, ya)]
+        paths.append([[x, y] for x, y in zip(xa, ya)])
+    return np.array(paths)
+
+def sample_points(prob_dist, num_points):
+    image_height, image_width = prob_dist.shape[:2]
+    # Flatten the probability distribution and create a list of coordinates
+    flat_prob_dist = (prob_dist/np.sum(prob_dist)).flatten()
+    coordinates = [(i % image_width, i // image_width) for i in range(image_width * image_height)]
+
+    # Sample agent locations based on the probability distribution
+    return [(coordinates[i][0], coordinates[i][1]) for i in np.random.choice(len(flat_prob_dist), size=num_points, p=flat_prob_dist)]
+
+
+def generate_flatnature_dataset():
+    # sigma_wetland = get_filter_sigma(10, env)
+    # sigma_roads = get_filter_sigma(30, env)
+    sigma_features = {"roads": 3.0, "wetlands": 3.0}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
+    features = {"wetlands":  {"natural": ["water", "wetland"]},
+                "roads":{
+                    "highway": [
+                        "service",
+                        "track",
+                        "highway",
+                        "primary",
+                        "secondary",
+                        "tertiary",
+                        "residential",
+                        ]
+                    }
+                }
+    generate_dataset("FlatTerrainNature",features, sigma_features, alpha_features, 40, 200, "experiments/FlatTerrainNature/")
+
+def generate_urban_dataset():
+    # sigma_wetland = get_filter_sigma(10, env)
+    # sigma_roads = get_filter_sigma(30, env)
+    # Tunes using env.interactive_plot()
+    sigma_features = {"roads": 2.5, "wetlands": 3.0}
+    alpha_features = {"roads": 10, "wetlands": 1.1}
+    features = {"wetlands":  {"natural": ["water", "wetland"]},
+                "roads":{
+                    "highway": [
+                        "service",
+                        "track",
+                        "highway",
+                        "primary",
+                        "secondary",
+                        "tertiary",
+                        "residential",
+                        ]
+                    }
+                }
+    generate_dataset("Urban",features, sigma_features, alpha_features, 40, 200, "experiments/Urban/")
+
+def generate_hillyterrainnature_dataset():
+    # sigma_wetland = get_filter_sigma(10, env)
+    # sigma_roads = get_filter_sigma(30, env)
+    # Tunes using env.interactive_plot()
+    sigma_features = {"forrest": 3.0, "tracks": 4.0}
+    alpha_features = {"forrest": 1.0, "tracks": 5.0}
+    features = {"forrest":  {"natural": ["wood", "wetland"]},
+                "tracks":
+                    {
+                        "highway": [
+                            "service",
+                            "track",
+                            "highway",
+                            "primary",
+                            "secondary",
+                            "tertiary",
+                            "residential",
+                            "path",
+                        ]
+                    },
+                }
+    # TODO create a input which defines whether the environment should do infill of the heatmap or not
+    generate_dataset("HillyTerrainNature",features, sigma_features, alpha_features, 40, 200, "experiments/HillyTerrainNature/")
+
+def generate_water_dataset():
+    # sigma_wetland = get_filter_sigma(10, env)
+    # sigma_roads = get_filter_sigma(30, env)
+    # Tunes using env.interactive_plot()
+    sigma_features = {"coastline": 3.0, "wetland": 3.0, "tracks": 3.0}
+    alpha_features = {"coastline": 4, "wetland": 1, "tracks": 0.5}
+    features = {"coastline": {"natural": "coastline"},
+                "wetland": {"natural": ["wetland","water"]},
+                "tracks":
+                    {
+                        "highway": [
+                            "service",
+                            "track",
+                            "highway",
+                            "primary",
+                            "secondary",
+                            "tertiary",
+                            "residential",
+                            "path",
+                        ]
+                    },
+                }
+    generate_dataset("Water",features, sigma_features, alpha_features, 40, 200, "experiments/Water/")
+
+# FlatNature: Lakes, river, wetlands, roads, Forrest edges, 
+# HillyNature: (Possibility of extracting the heightmap?), Forrest edges 
+# Urban: Parks, roads, pathways, Lakes, river, wetlands
+# Water: Wetlands, banks, roads
+
 if __name__ == "__main__":
+    # generate_urban_dataset()
+    # generate_flatnature_dataset()
+    # generate_hillyterrainnature_dataset()
+    # generate_water_dataset()
+    # exit(0)
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
-    env = EnvironmentBuilder().set_polygon_file(polygon_file).set_feature(
-        "wetlands", {"natural": ["water", "wetland"]}
-    ).set_feature(
-        "roads",
-        {
-            "highway": [
-                "service",
-                "track",
-                "highway",
-                "primary",
-                "secondary",
-                "tertiary",
-                "residential",
-            ]
-        },
-    ).build()
-
-    env.interactive_plot()
+    sigma_features = {"roads": 3.0, "wetlands": 3.0}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
+    
+    env = EnvironmentBuilder().set_polygon_file(polygon_file).set_buffer(50).set_feature(
+        "roads",{
+                    "highway": [
+                        "service",
+                        "track",
+                        "highway",
+                        "primary",
+                        "secondary",
+                        "tertiary",
+                        "residential",
+                        ]
+                    }
+    ).set_feature("wetlands",  {"natural": ["water", "wetland"]}).build()
+    
+    # heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
+    # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, levels=10, cmap="jet")
+    # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, cmap="jet")
+    # plt.colorbar(label='Heatmap Intensity')
+    # plt.xlabel('X Coordinate')
+    # plt.ylabel('Y Coordinate')
+    # plt.title('Heatmap Topology')
+    # plt.show()
+    
+    
+    env.interactive_plot(use_sliders=True, show_basemap=True, show_features=False, export=True)
+    

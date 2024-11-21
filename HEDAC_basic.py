@@ -15,7 +15,8 @@ import time
 import functools
 import numpy as np
 import imageio.v2 as imageio
-
+import threading
+mutex = threading.Lock()
 plt.rcParams.update({
     "text.usetex": True,
     "font.family": "serif",
@@ -283,10 +284,6 @@ class HEDAC_basic():
         print('Search')
         self.sit = 0
         c_cumulative = np.zeros([self.ny, self.nx])
-        
-        # Predetermine the length of the agent paths, based on self.it, but add noise to the value which correspond to 50% of the value
-        agent_path_lengths = [int(np.random.normal(len(self.T)/2, 0.25 * len(self.T))) for _ in range(len(self.agents))]
-        print(agent_path_lengths)
         for self.it, self.t in enumerate(self.T):
             # old
             xa_all, ya_all = [], []
@@ -357,7 +354,6 @@ class HEDAC_basic():
                     _ya = np.clip(_ya, self.Y[0] + pos_eps, self.Y[-1] - pos_eps)
                     xa.append(_xa)
                     ya.append(_ya)
-
             # print('%.5f %8.4e' % (self.t, self.E[-1]))
 
 
@@ -463,111 +459,112 @@ class HEDAC_basic():
             print('%.5f %8.4e' % (self.t, self.E[-1]))
 
     def plot_solution(self):
-        plt.figure(figsize=(20, 12))
-        gs1 = gridspec.GridSpec(2, 3)
-        gs1.update(left=0.02, right=0.98, wspace=0.17, hspace=0.1, top=0.97, bottom=0.05)
-        ax1 = plt.subplot(gs1[0, 0])
-        ax2 = plt.subplot(gs1[0, 1])
-        ax3 = plt.subplot(gs1[0, 2])
-        ax4 = plt.subplot(gs1[1, 0])
-        ax5 = plt.subplot(gs1[1, 1])
-        ax6 = plt.subplot(gs1[1, 2])
-        plt.title('t=%.4f' % self.T[self.it])
+        with mutex: # This avoids errors when running parallel threads
+            plt.figure(figsize=(20, 12))
+            gs1 = gridspec.GridSpec(2, 3)
+            gs1.update(left=0.02, right=0.98, wspace=0.17, hspace=0.1, top=0.97, bottom=0.05)
+            ax1 = plt.subplot(gs1[0, 0])
+            ax2 = plt.subplot(gs1[0, 1])
+            ax3 = plt.subplot(gs1[0, 2])
+            ax4 = plt.subplot(gs1[1, 0])
+            ax5 = plt.subplot(gs1[1, 1])
+            ax6 = plt.subplot(gs1[1, 2])
+            plt.title('t=%.4f' % self.T[self.it])
 
-        # ax1.set_title('Probability density')
-        ax1.set_title('Interest density')
-        if self.method == 'hedac':
-            cntr1 = ax1.contourf(self.X, self.Y, self.ms, 50, cmap=plt.cm.RdBu_r)
-        elif self.method == 'smc':
-            cntr1 = ax1.contourf(self.X, self.Y, self.ms, 50, cmap=plt.cm.RdBu_r)
-        plt.colorbar(cntr1, ax=ax1, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+            # ax1.set_title('Probability density')
+            ax1.set_title('Interest density')
+            if self.method == 'hedac':
+                cntr1 = ax1.contourf(self.X, self.Y, self.ms, 50, cmap=plt.cm.RdBu_r)
+            elif self.method == 'smc':
+                cntr1 = ax1.contourf(self.X, self.Y, self.ms, 50, cmap=plt.cm.RdBu_r)
+            plt.colorbar(cntr1, ax=ax1, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
 
-        ax2.set_title('Coverage')
-        if self.method == 'hedac':
-            cntr2 = ax2.contourf(self.X, self.Y, self.cs, 50, cmap=plt.cm.RdBu_r)
-        elif self.method == 'smc':
-            cntr2 = ax2.contourf(self.X, self.Y, self.cs, 50, cmap=plt.cm.RdBu_r)
-        plt.colorbar(cntr2, ax=ax2, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+            ax2.set_title('Coverage')
+            if self.method == 'hedac':
+                cntr2 = ax2.contourf(self.X, self.Y, self.cs, 50, cmap=plt.cm.RdBu_r)
+            elif self.method == 'smc':
+                cntr2 = ax2.contourf(self.X, self.Y, self.cs, 50, cmap=plt.cm.RdBu_r)
+            plt.colorbar(cntr2, ax=ax2, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
 
-        ax3.set_title('Tracking')
-        cntr3 = ax3.contourf(self.X, self.Y, self.m, 50, cmap=plt.cm.Purples)
-        plt.colorbar(cntr3, ax=ax3, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
-        # ax3.plot(self.XM, self.YM, '.', color='k', alpha=0.5, ms=0.1)
-        for xa, ya in zip(self.XA, self.YA):
-            ax3.plot(xa, ya, c='orange', lw=1, alpha=0.5)
-        for xa, ya in zip(self.XA, self.YA):
-            ax3.plot(xa[-1], ya[-1], 'o', c='orange', ms=8)
-        # for xa, ya in zip(self.XA, self.YA):
-        #     ax3.plot(xa[0], ya[0], 'o', c='orange', ms=8)
-        ax3.set_xlim(self.X[0], self.X[-1])
-        ax3.set_ylim(self.Y[0], self.Y[-1])
+            ax3.set_title('Tracking')
+            cntr3 = ax3.contourf(self.X, self.Y, self.m, 50, cmap=plt.cm.Purples)
+            plt.colorbar(cntr3, ax=ax3, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+            # ax3.plot(self.XM, self.YM, '.', color='k', alpha=0.5, ms=0.1)
+            for xa, ya in zip(self.XA, self.YA):
+                ax3.plot(xa, ya, c='orange', lw=1, alpha=0.5)
+            for xa, ya in zip(self.XA, self.YA):
+                ax3.plot(xa[-1], ya[-1], 'o', c='orange', ms=8)
+            # for xa, ya in zip(self.XA, self.YA):
+            #     ax3.plot(xa[0], ya[0], 'o', c='orange', ms=8)
+            ax3.set_xlim(self.X[0], self.X[-1])
+            ax3.set_ylim(self.Y[0], self.Y[-1])
 
-        qstep = int(self.nx / 50.0)  # quiver step
+            qstep = int(self.nx / 50.0)  # quiver step
 
-        if self.method == 'hedac':
-            pass
-            levels = np.arange(np.min(self.s) - 0.05, np.max(self.s) + 0.05, 0.025)
-            ax4.set_title('Source')
-            vmin, vmax = np.min(self.s), np.max(self.s)
-            if vmin > vmax:
-                vmin, vmax = vmax, vmin
-            if vmin > 0:
-                vmin = -vmin
-            divnorm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
-            cntr4 = ax4.contourf(self.X, self.Y, self.s, levels, cmap=mpl.colors.ListedColormap(CM / 255), norm=divnorm)
-            plt.colorbar(cntr4, ax=ax4, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
-            # sss = self.s
-            # sss[sss<0]=0
-            # ax4.contourf(self.X, self.Y, sss, 50, cmap = plt.cm.RdBu_r)
+            if self.method == 'hedac':
+                pass
+                levels = np.arange(np.min(self.s) - 0.05, np.max(self.s) + 0.05, 0.025)
+                ax4.set_title('Source')
+                vmin, vmax = np.min(self.s), np.max(self.s)
+                if vmin > vmax:
+                    vmin, vmax = vmax, vmin
+                if vmin > 0:
+                    vmin = -vmin
+                divnorm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+                cntr4 = ax4.contourf(self.X, self.Y, self.s, levels, cmap=mpl.colors.ListedColormap(CM / 255), norm=divnorm)
+                plt.colorbar(cntr4, ax=ax4, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+                # sss = self.s
+                # sss[sss<0]=0
+                # ax4.contourf(self.X, self.Y, sss, 50, cmap = plt.cm.RdBu_r)
 
-            ax5.set_title('Attraction field')
-            cntr5 = ax5.contourf(self.X, self.Y, self.U, 50, cmap=plt.cm.coolwarm, alpha=0.95)
-            plt.colorbar(cntr5, ax=ax5, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
-            un = np.sqrt(self.uy ** 2 + self.ux ** 2)
-            # ax5.contour(self.X, self.Y, self.U, 50, linewidths=0.2, colors='black')
-            ax5.quiver(self.X[::qstep], self.Y[::qstep], self.ux[::qstep, ::qstep] / un[::qstep, ::qstep],
-                       self.uy[::qstep, ::qstep] / un[::qstep, ::qstep])
+                ax5.set_title('Attraction field')
+                cntr5 = ax5.contourf(self.X, self.Y, self.U, 50, cmap=plt.cm.coolwarm, alpha=0.95)
+                plt.colorbar(cntr5, ax=ax5, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+                un = np.sqrt(self.uy ** 2 + self.ux ** 2)
+                # ax5.contour(self.X, self.Y, self.U, 50, linewidths=0.2, colors='black')
+                ax5.quiver(self.X[::qstep], self.Y[::qstep], self.ux[::qstep, ::qstep] / un[::qstep, ::qstep],
+                        self.uy[::qstep, ::qstep] / un[::qstep, ::qstep])
 
-        elif self.method == 'smc':
-            sss = -IDCT(self.Las).T
-            ax4.set_title(r'$m_k - c_k$')
-            sk = self.mk[:201, :201] - self.ck[:201, :201]
-            divnorm = colors.TwoSlopeNorm(vmin=np.min(sk), vcenter=0., vmax=np.max(sk))
-            cntr4 = ax4.imshow(sk, cmap=mpl.cm.seismic, norm=divnorm)
-            plt.colorbar(cntr4, ax=ax4, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+            elif self.method == 'smc':
+                sss = -IDCT(self.Las).T
+                ax4.set_title(r'$m_k - c_k$')
+                sk = self.mk[:201, :201] - self.ck[:201, :201]
+                divnorm = colors.TwoSlopeNorm(vmin=np.min(sk), vcenter=0., vmax=np.max(sk))
+                cntr4 = ax4.imshow(sk, cmap=mpl.cm.seismic, norm=divnorm)
+                plt.colorbar(cntr4, ax=ax4, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
 
-            self.uy, self.ux = np.gradient(sss)
-            un = np.sqrt(self.uy ** 2 + self.ux ** 2)
-            ax5.set_title('Attraction field')
-            cntr5 = ax5.contourf(self.X, self.Y, sss, 150, cmap=plt.cm.coolwarm, alpha=0.95)
-            ax5.quiver(self.X[::qstep], self.Y[::qstep], self.ux[::qstep, ::qstep] / un[::qstep, ::qstep],
-                       self.uy[::qstep, ::qstep] / un[::qstep, ::qstep])
-            plt.colorbar(cntr5, ax=ax5, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
+                self.uy, self.ux = np.gradient(sss)
+                un = np.sqrt(self.uy ** 2 + self.ux ** 2)
+                ax5.set_title('Attraction field')
+                cntr5 = ax5.contourf(self.X, self.Y, sss, 150, cmap=plt.cm.coolwarm, alpha=0.95)
+                ax5.quiver(self.X[::qstep], self.Y[::qstep], self.ux[::qstep, ::qstep] / un[::qstep, ::qstep],
+                        self.uy[::qstep, ::qstep] / un[::qstep, ::qstep])
+                plt.colorbar(cntr5, ax=ax5, shrink=0.98, pad=0.02, aspect=50, fraction=0.02)
 
-        ax6.set_title('Convergence')
-        ax6.plot(self.T[1:self.it + 1], np.array(self.E[1:]), 'b-', lw=2)
-        # ax6.set_xlim(self.T[0], self.T[-1])
-        ax6.set_xlim(self.T[1], self.T[-1])
-        # print(np.max(self.E))
-        ax6.set_ylim(np.min(self.E), np.max(self.E))
-        ax6.set_ylabel(r'$\phi^2$')
-        ax6.set_xlabel(r't')
-        # ax6.set_yscale('log')
-        # ax6.set_xscale('log')
-        ax6.grid(which='minor')
-        ax6.grid(which='major')
+            ax6.set_title('Convergence')
+            ax6.plot(self.T[1:self.it + 1], np.array(self.E[1:]), 'b-', lw=2)
+            # ax6.set_xlim(self.T[0], self.T[-1])
+            ax6.set_xlim(self.T[1], self.T[-1])
+            # print(np.max(self.E))
+            ax6.set_ylim(np.min(self.E), np.max(self.E))
+            ax6.set_ylabel(r'$\phi^2$')
+            ax6.set_xlabel(r't')
+            # ax6.set_yscale('log')
+            # ax6.set_xscale('log')
+            ax6.grid(which='minor')
+            ax6.grid(which='major')
 
-        plt.savefig(self.results_dir + 'it_%06d.png' % self.it)
-        plt.close()
-        # Create a GIF from the saved figures
-        if self.it % 10 == 0:
-            try:
-                print('Creating GIF ....')
-                image_files = sorted([f for f in os.listdir(self.results_dir) if f.startswith('it_') and f.endswith('.png')])
-                images = [imageio.imread(os.path.join(self.results_dir, file)) for file in image_files]
-                imageio.mimsave(os.path.join(self.results_dir, f'{self.method}_ergodic_coverage.gif'), images, duration=0.1)
-            except Exception as e:
-                print(f'Creating GIF failed: {e}')
+            plt.savefig(self.results_dir + 'it_%06d.png' % self.it)
+            plt.close()
+            # Create a GIF from the saved figures
+            if self.it % 10 == 0:
+                try:
+                    print('Creating GIF ....')
+                    image_files = sorted([f for f in os.listdir(self.results_dir) if f.startswith('it_') and f.endswith('.png')])
+                    images = [imageio.imread(os.path.join(self.results_dir, file)) for file in image_files]
+                    imageio.mimsave(os.path.join(self.results_dir, f'{self.method}_ergodic_coverage.gif'), images, duration=0.1)
+                except Exception as e:
+                    print(f'Creating GIF failed: {e}')
 
 
     def save_fields(self):
