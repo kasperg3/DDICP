@@ -5,8 +5,11 @@ import os
 import pickle
 import threading
 from dataclasses import dataclass
+import time
 from typing import List, Tuple
 
+import trajgenpy
+import json
 import numpy as np
 import pandas as pd
 import shapely
@@ -14,6 +17,8 @@ from shapely.geometry import LineString
 from trajallocpy import Agent, CoverageProblem, Experiment, Task
 import environment_modelling
 from environment_modelling import world_to_image, image_to_world, ExperimentData, get_filter_sigma
+from scipy.spatial import KDTree
+from tqdm import tqdm
 
 def task_allocation(boundary, tasks, agent_list):
     # Normalize the geoms
@@ -39,23 +44,19 @@ def task_allocation(boundary, tasks, agent_list):
     
     return exp
 
-def information_gain_from_points(points, heatmap, sensor_range, sensor_sigma):
-    x, y = np.meshgrid(np.arange(heatmap.shape[1]), np.arange(heatmap.shape[0]))
-    # distances = np.min([np.sqrt((x - p[1])**2 + (y - p[0])**2) for p in points], axis=0)
-    distances = np.min([np.linalg.norm(np.array([x - p[1], y - p[0]]), axis=0) for p in points], axis=0)
-    # distances = np.min([np.hypot(x - p[1], y - p[0]) for p in points], axis=0)
-    # Gaussian sensor model (decay with distance)
-    sensor_model = np.exp(-distances**2 / (2 * sensor_sigma**2))
-    sensor_mask = distances <= sensor_range
-    information_gain = heatmap * sensor_model * sensor_mask
-    return information_gain.sum() / heatmap.sum()
+def get_sensor_mask(points,heatmap, tree: KDTree, sensor_range):
+    # Query the points within the sensor range
+    indices = tree.query_ball_point(np.array(points), sensor_range)
+    sensor_mask = np.zeros_like(heatmap, dtype=bool)
+    for idx in indices:
+        sensor_mask.ravel()[idx] = True
+    return sensor_mask
 
-def information_gain_from_point(point, heatmap, sensor_range, sensor_sigma):
-    x, y = np.meshgrid(np.arange(heatmap.shape[1]), np.arange(heatmap.shape[0]))
-    distances = np.sqrt((x - point[1])**2 + (y - point[0])**2)
-    sensor_model = np.exp(-distances**2 / (2 * sensor_sigma**2))
-    sensor_mask = distances <= sensor_range
-    information_gain = heatmap* sensor_model * sensor_mask
+def information_gain_from_points_tree(points,heatmap, tree: KDTree, sensor_range, sensor_sigma):
+    sensor_mask = get_sensor_mask(points, heatmap, tree, sensor_range)
+    # sensor_model = np.exp(-np.square(np.linalg.norm(np.array(np.where(sensor_mask)).T - np.array(points), axis=1)) / (2 * sensor_sigma**2))
+    information_gain = heatmap * sensor_mask # *sensor_model
+
     return information_gain.sum() / heatmap.sum()
 
 @dataclass
@@ -87,6 +88,9 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
     
     x, y = np.meshgrid(np.arange(heatmap.shape[1]), np.arange(heatmap.shape[0]))
     global_sensor_mask = np.zeros_like(heatmap, dtype=bool)
+    # Create a KDTree for the heatmap points
+    heatmap_points = np.column_stack((y.ravel(), x.ravel())) # inverted x and y to match the heatmap coordinates
+    tree = KDTree(heatmap_points)
     
     # Make sure that the information gain is calculated correctly
     interpolated_trajectories = []
@@ -112,7 +116,6 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
         for i in range(0, len(trajectory)):
             # Calculate the time it takes to traverse the trajectory
             agent_position = np.array(trajectory[i])
-
             if i == 0:
                 distance = 0
             else:
@@ -125,19 +128,21 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
                     survivors_found_time.append(timer)
                     survivors_found_location.append(survivor)
                     survivors_world_coords.remove(survivor)
-                    
+
             # Calculate the information gain at each timestep:
             point_in_heatmap_coords = world_to_image(trajectory[i][0], trajectory[i][1], experiment_data.meter_per_bin, experiment_data.min_x, experiment_data.min_y, experiment_data.buffer)
-            sensor_distances = np.sqrt((x - point_in_heatmap_coords[1])**2 + (y - point_in_heatmap_coords[0])**2)
-            
+            # information_gain_from_points_tree(point_in_heatmap_coords, heatmap, tree, sensor_range, sensor_variance)
+            # sensor_distances = np.sqrt((x - point_in_heatmap_coords[1])**2 + (y - point_in_heatmap_coords[0])**2)
+            # sensor_mask = sensor_distances <= sensor_range
+            sensor_mask = get_sensor_mask([point_in_heatmap_coords], heatmap, tree, sensor_range)
             # Global information gain
-            global_sensor_mask += sensor_distances <= sensor_range
+            global_sensor_mask += sensor_mask
             temp_information_gain = (heatmap*global_sensor_mask).sum()
             global_information_gain_list.append((temp_information_gain - global_information_gain) / heatmap.sum())
             global_information_gain = temp_information_gain
             
             # Local information gain
-            local_sensor_mask += sensor_distances <= sensor_range
+            local_sensor_mask += sensor_mask
             temp_information_gain = (heatmap*local_sensor_mask).sum()
             local_information_gain_list.append((temp_information_gain - local_information_gain) / heatmap.sum())
             local_information_gain = temp_information_gain
@@ -169,9 +174,7 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
                             agent_capacity=agent_capacity
                             )
 
-
-def run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file):
-    environment_file = "FlatTerrainNature"
+def run_hedac_experiment(sensor_range, features, sigma_features, alpha_features, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = f"experiments/{environment_file}/{environment_file}_hedac_agents_{n_agents}_capacity_{task_length}_{timestamp}/"
     os.makedirs(experiment_dir, exist_ok=True)
@@ -181,7 +184,7 @@ def run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,
     def process_experiment(j):
         result = {}
         start_time = datetime.datetime.now()
-        experiment = environment_modelling.generate_dataset("FlatTerrainNature", n_agents, task_length, experiment_dir + str(j) + "/", False, common_depot=common_depot)
+        experiment = environment_modelling.generate_dataset(environment_file,features,sigma_features, alpha_features, n_agents, task_length, experiment_dir + str(j) + "/", False, common_depot=common_depot)
         end_time = datetime.datetime.now()
         elapsed_time = end_time - start_time
         print(f"Dataset generation for experiment {j} took {elapsed_time.total_seconds()} seconds")
@@ -198,7 +201,7 @@ def run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,
                                    task_length,  # agent capacity
                                    experiment)
         
-        result["FlatTerrainNature" + str(j)] = {
+        result[environment_file + str(j)] = {
             "heatmap": experiment.heatmap,
             "trajectories": routes,
             "travel": {},
@@ -229,18 +232,19 @@ def run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,
                 result = future.result()
                 print(f"Processing results from: {result.keys()}")
                 result_list.update(result)
-                print("results: ", result_list.keys())
                 result_df = pd.DataFrame.from_dict(result_list, orient='index')
                 result_df.to_pickle(os.path.join(experiment_dir, f"hedac_agents_{n_agents}_capacity_{task_length}.pkl"))
 
-    result_df = pd.DataFrame.from_dict(result_list, orient='index')
-    result_df.to_pickle(os.path.join(experiment_dir, f"hedac_agents_{n_agents}_capacity_{task_length}.pkl"))
+def run_hedac_experiments(environment_file, features, sigma_features, alpha_features, experiment_dir):
+    sensor_range = 10
+    sensor_variance = 2
+    common_depot = True
+    total_budget = 8000
+    for n_agents in [3,4,5]:
+        task_length = int(total_budget/n_agents)
+        run_hedac_experiment(sensor_range,features, sigma_features,alpha_features, sensor_variance, 0, n_agents, task_length, common_depot, environment_file)
 
-        
 def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_capacity, sensor_range, sensor_variance, reward_shaping:callable, common_depot=True):
-    # Comment this out to generate the dataset
-    # generate_dataset(environment_file,40,200, True)
-    # exit(0)
     # Load the dataset
     dataset_dir = "data/DemaScenariosTasks/" + environment_file
     datasets = {}
@@ -252,7 +256,7 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = f"experiments/{environment_file}/{environment_file}_allocation_{title}_agents_{number_of_agents}_capacity_{agent_capacity}_{timestamp}/"
     os.makedirs(experiment_dir, exist_ok=True)
-    
+
     for folder in os.listdir(dataset_dir):
         folder_path = os.path.join(dataset_dir, folder)
         if os.path.isdir(folder_path):
@@ -260,23 +264,31 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
             if os.path.isfile(pkl_file):
                 with open(pkl_file, 'rb') as f:
                     datasets[folder_path] = pickle.load(f)
-    
+
     result_list = {}
     for path, experiment in datasets.items():
+        sensor_range_bins_units= sensor_range/experiment.meter_per_bin
+        # Create a KDTree for the heatmap points
+        x, y = np.meshgrid(np.arange(experiment.heatmap.shape[1]), np.arange(experiment.heatmap.shape[0]))
+        heatmap_points = np.column_stack((y.ravel(), x.ravel())) # inverted x and y to match the heatmap coordinates
+        heatmap_tree = KDTree(heatmap_points)
+    
         experiment: ExperimentData
         experiment_name = os.path.basename(path)
+        
         def process_task(task):
             task: Task.TrajectoryTask
             task_length = np.random.normal(mean_length, variance_length)
             point_list = list(task.trajectory.coords)[:int(task_length)]
-            task.reward = information_gain_from_points(point_list, experiment.heatmap, sensor_range, sensor_variance)
+            # temp_reward= information_gain_from_points(point_list, experiment.heatmap, sensor_range, sensor_variance)
+            task.reward = information_gain_from_points_tree(point_list,experiment.heatmap, heatmap_tree, sensor_range_bins_units, sensor_variance) 
             task.reward = reward_shaping(task.reward)
             point_list = [image_to_world(p[0], p[1], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer) for p in point_list]
             task.trajectory = LineString(point_list)
             task.__post_init__()
             return task
 
-        with concurrent.futures.ThreadPoolExecutor(7) as executor:
+        with concurrent.futures.ThreadPoolExecutor(8) as executor:
             updated_tasks = list(executor.map(process_task, experiment.tasks))
  
         experiment.tasks = updated_tasks
@@ -305,7 +317,7 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
         end_time = datetime.datetime.now()
         elapsed_time = end_time - start_time
         print(f"Task allocation for experiment {experiment_name} took {elapsed_time.total_seconds()} seconds")
-        
+        start_time = time.time()
         eval= evaluate_experiment(heatmap=experiment.heatmap,
                                   trajectories=list(allocation.routes.values()),
                                   sensor_range=sensor_range, 
@@ -315,7 +327,8 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
                                   number_of_agents=number_of_agents,
                                   agent_capacity=agent_capacity,
                                   experiment_data=experiment)
-        
+        end_time = time.time()
+        print(f"Experiment evaluation took {end_time - start_time} seconds")
         result_list[experiment_name] = {
             "heatmap": experiment.heatmap,
             "trajectories": allocation.routes,
@@ -356,21 +369,25 @@ def run_allocation_experiments(environment_file):
     common_depot = True
     total_budget = 8000
     # Task generation budget = 200*40= 8000, Generate tasks that are 1/2 the length of the budget to match the trajallocation sampling of trajectories
-    # for n_agents in [ 2, 3, 4, 5]:
-    #     budget = int(total_budget/n_agents)
-    #     run_trajalloc_experiment(environment_file, "information_reward", n_agents,budget, sensor_range, sensor_variance, no_shaping, common_depot)
+    budgets = [1000, 700, 500, 400]
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = []
+        for n_agents in [2, 3, 4, 5]:
+            budget = int(total_budget/n_agents)
+            futures.append(executor.submit(run_trajalloc_experiment, environment_file, "exponential_shaping", n_agents, budget, sensor_range, sensor_variance, exponential_shaping, common_depot))
+            futures.append(executor.submit(run_trajalloc_experiment,environment_file, "information_reward", n_agents, budget, sensor_range, sensor_variance, no_shaping, common_depot))
+            futures.append(executor.submit(run_trajalloc_experiment,environment_file, "static_reward", n_agents, budget, sensor_range, sensor_variance, static_reward_shaping, common_depot))
+            # futures.append(executor.submit(run_trajalloc_experiment,environment_file, "exponential_shaping_low_budget", n_agents, budgets[n_agents-2], sensor_range, sensor_variance, exponential_shaping, common_depot))
 
-    for n_agents in [ 2, 3, 4, 5]:
-        budget = int(total_budget/n_agents)
-        run_trajalloc_experiment(environment_file, "exponential_shaping", n_agents,budget, sensor_range, sensor_variance, exponential_shaping, common_depot)
+        with tqdm(total=len(futures), desc="Running experiments") as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"An error occurred: {e}")
+                pbar.update(1)
 
-    for n_agents in [ 2, 3, 4, 5]:
-        budget = int(total_budget/n_agents)
-        run_trajalloc_experiment(environment_file, "static_reward", n_agents,budget, sensor_range, sensor_variance, static_reward_shaping, common_depot)
-
-import trajgenpy
-import json
-import matplotlib.pyplot as plt
 def generate_sweep_tasks(polygon_file, distance_between_sweeps):
     print("Generating sweep tasks")
     base_path = "data/DemaScenarios/"
@@ -504,7 +521,23 @@ if __name__ == '__main__':
     # run_allocation_experiments("FlatTerrainNature")
     # run_allocation_experiments("HillyTerrainNature")
     # run_allocation_experiments("Urban")
-    run_allocation_experiments("Water")
+    # run_allocation_experiments("Water")
     # generate_dataset(environment_file,40,200, True)
-    # run_hedac_experiment(sensor_range, sensor_variance, task_variance, n_agents,task_length, common_depot, environment_file)
+    
+    sigma_features = {"roads": 3.0, "wetlands": 3.0}
+    alpha_features = {"roads": 1, "wetlands": 0.5}
+    features = {"wetlands":  {"natural": ["water", "wetland"]},
+                "roads":{
+                    "highway": [
+                        "service",
+                        "track",
+                        "highway",
+                        "primary",
+                        "secondary",
+                        "tertiary",
+                        "residential",
+                        ]
+                    }
+                }
+    run_hedac_experiments("FlatTerrainNature", features, sigma_features, alpha_features,"experiments/FlatTerrainNature/")
     

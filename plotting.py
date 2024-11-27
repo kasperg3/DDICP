@@ -30,21 +30,26 @@ def plot_information_gain_histogram(dataset_dir):
             if os.path.isfile(pkl_file):
                 with open(pkl_file, 'rb') as f:
                     datasets[folder_path] = pickle.load(f)
-
     information_gains = []
     for path, experiment in datasets.items():
         experiment: ExperimentData
+        x, y = np.meshgrid(np.arange(experiment.heatmap.shape[1]), np.arange(experiment.heatmap.shape[0]))
+        # Create a KDTree for the heatmap points
+        heatmap_points = np.column_stack((y.ravel(), x.ravel())) # inverted x and y to match the heatmap coordinates
+        tree = KDTree(heatmap_points)
+        
+        bin_range = sensor_range / experiment.meter_per_bin
         for task in experiment.tasks:
             task: Task.TrajectoryTask
             task_length = np.random.normal(mean_length, variance_length)
             point_list = list(task.trajectory.coords)[:int(task_length)]
-            information_gains.append(information_gain_from_points(point_list, experiment.heatmap, sensor_range, sensor_variance))
+            information_gains.append(information_gain_from_points_tree(point_list, experiment.heatmap,tree,bin_range , sensor_variance))
 
     plt.hist(information_gains, bins=30, edgecolor='black')
     plt.title('Information Gain per Task')
     plt.xlabel('Information Gain')
     plt.ylabel('Frequency')
-    # plt.show()
+    plt.show()
 
 def plot_reward_function():
 
@@ -187,10 +192,26 @@ def plot_on_map(experiment_data, tasks, travel, eval, path, title):
     # plt.show()
     plt.close()
 
-def plot_result(show_survivors, experiment_data, tasks, travel,trajectories, eval, path,title, show=True):
+def plot_result(show_survivors, experiment_data: ExperimentData, tasks, travel,trajectories, eval, path,title, show=True):
     fig1, ax1 = plt.subplots(figsize=(4, 3))
     fig2, ax2 = plt.subplots(figsize=(4, 3))
     fig3, ax3 = plt.subplots(figsize=(4, 3))
+    fig4, ax4 = plt.subplots(figsize=(4, 3))
+    x, y = np.meshgrid(np.arange(experiment_data.heatmap.shape[1]), np.arange(experiment_data.heatmap.shape[0]))
+    heatmap_points = np.column_stack((y.ravel(), x.ravel())) # inverted x and y to match the heatmap coordinates
+    tree = KDTree(heatmap_points)
+    sensor_range = 10 
+    mask = np.zeros_like(experiment_data.heatmap, dtype=bool)
+    for i, route in enumerate(tasks.values()):
+        for segment in route:
+            points = [world_to_image(p[0],p[1],experiment_data.meter_per_bin, experiment_data.min_x, experiment_data.min_y, experiment_data.buffer) for p in list(segment)]
+            mask += get_sensor_mask(points, experiment_data.heatmap,tree, sensor_range / experiment_data.meter_per_bin)
+    heatmap = mask * experiment_data.heatmap
+    ax4.imshow(np.flipud(heatmap.T), cmap='Greys', interpolation='none')
+    ax4.set_title('Coverage Mask')
+    ax4.set_xlabel('X Coordinate [m]')
+    ax4.set_ylabel('Y Coordinate [m]')
+    ax4.grid(False)
     show_survivors = False
     
     # Plot agent routes
@@ -270,6 +291,7 @@ def plot_result(show_survivors, experiment_data, tasks, travel,trajectories, eva
     fig1.savefig(str(path) + str(title) + "trajectories.png",bbox_inches='tight')
     fig2.savefig(str(path) + str(title) + "survivors_found.png",bbox_inches='tight')
     fig3.savefig(str(path) + str(title) + "information_gain.png",bbox_inches='tight')
+    fig4.savefig(str(path) + str(title) + "sensor_footprint.png",bbox_inches='tight')
     
     # plt.show()
     plt.close()
@@ -362,7 +384,7 @@ def plot_comparrative_results(*experiment_files,legends =[],discounted_rewards=F
         if discounted_rewards:
             for k, global_info in enumerate(global_information_samples):
                 for j, info in enumerate(global_info):
-                    global_info[j] *= 0.10**(information_time_samples[k][j]/capacity)
+                    global_info[j] *= 0.05**(information_time_samples[k][j]/capacity)
 
 
         cumulative_information_samples = [np.cumsum(global_info) for global_info in global_information_samples]
@@ -382,7 +404,7 @@ def plot_comparrative_results(*experiment_files,legends =[],discounted_rewards=F
                          alpha=0.2)
 
     plt.xlabel('Time [s]')
-    # plt.xlim(0, 1000)
+    # plt.xlim(0, 700)
     if title == "":
         filename = "data/plots/comparative_cumulative_information_gain.png"
         if discounted_rewards:
@@ -395,7 +417,7 @@ def plot_comparrative_results(*experiment_files,legends =[],discounted_rewards=F
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=900)
     if show:
         plt.show()
     
@@ -597,8 +619,52 @@ def generate_table_values(experiment_files, categories):
 
 
 if __name__=="__main__":
-    # plot_reward_function()
+    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241126_131118/20241126_131118.pkl")
+    # plot_information_gain_histogram("data/DemaScenariosTasks/FlatTerrainNature")
     # exit(0)
+    # 4 Agent  Comparrative results
+    # plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241126_131118/20241126_131118.pkl",
+    #                         "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241126_131118/20241126_131118.pkl",
+    #                         "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl",
+    #                         legends=["itCBBA","itCBBA sweep","HEDAC", "HEDAC"],
+    #                         discounted_rewards=True,
+    #                         title="discounted_cumulative_information_gain_4_agents",
+    #                         n_agents=4,
+    #                         show=True
+    #                         )
+    plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_2_capacity_4000_20241126_131118/20241126_131118.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_2_capacity_4000_20241126_131118/20241126_131118.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_2_capacity_4000_20241126_145400/hedac_agents_2_capacity_4000.pkl",
+                            legends=["itCBBA","itCBBA sweep","HEDAC", "HEDAC"],
+                            discounted_rewards=True,
+                            title="discounted_cumulative_information_gain_4_agents",
+                            n_agents=2,
+                            show=True
+                            )
+
+    # # urban comparrison
+    # plot_comparrative_results("experiments/Urban/Urban_allocation_exponential_shaping_agents_4_capacity_2000_20241120_120129/20241120_120129.pkl",
+    #                     "experiments/Urban/Urban_allocation_static_reward_agents_4_capacity_2000_20241120_124822/20241120_124822.pkl",
+    #                     "experiments/Urban/Urban_allocation_exponential_shaping_10_agents_4_capacity_2000_20241122_095756/20241122_095756.pkl",
+    #                     legends=["itCBBA","tCBBA", "itcbba10"],
+    #                     discounted_rewards=True,
+    #                     title="urban_different_envs",
+    #                     n_agents=4
+    #                     )
+
+    # Hilly comparrison
+
+    # plot_comparrative_results("experiments/HillyTerrainNature/HillyTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241120_104904/20241120_104904.pkl",
+    #                     "experiments/HillyTerrainNature/HillyTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241120_112923/20241120_112923.pkl",
+    #                     "experiments/Urban/Urban_hedac_agents_2_capacity_4000_20241121_120725/hedac_agents_2_capacity_4000.pkl",
+    #                     legends=["itCBBA","tCBBA", "itcbba10"],
+    #                     discounted_rewards=True,
+    #                     title="hilly_different_envs",
+    #                     n_agents=2
+    #                     )
+
+    
+    exit(0)
     # sns.set_style("ticks")
     # sns.set_context("paper", rc={"lines": 2})
     experiment_files = [
@@ -671,7 +737,19 @@ if __name__=="__main__":
                             n_agents=5
                             )
     
+    
+        # 4 Agent  Comparrative results 
+    plot_comparrative_results("experiments/FlatTerrainNature/FlatTerrainNature_allocation_exponential_shaping_agents_4_capacity_2000_20241126_131118/20241126_131118.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_allocation_static_reward_agents_4_capacity_2000_20241126_131118/20241126_131118.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_sweep_tasks_tcbba_agents_4_capacity_2000/20241118_132108.pkl",
+                            "experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_4_capacity_2000_20241108_215950/hedac_agents_4_capacity_2000.pkl",
+                            legends=["itCBBA","itCBBA sweep","tCBBA sweep", "HEDAC"],
+                            discounted_rewards=True,
+                            title="discounted_cumulative_information_gain_4_agents",
+                            n_agents=4
+                            )    
+    
+    
     # plot_information_gain_histogram(dataset_dir)
     # plot_convergence()
 
-    # evaluate_results("experiments/FlatTerrainNature/FlatTerrainNature_hedac_agents_3_capacity_2666_20241108_180024/hedac_agents_3_capacity_2666.pkl")
