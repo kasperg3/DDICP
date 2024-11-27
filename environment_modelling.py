@@ -10,6 +10,8 @@ from trajgenpy.Geometries import (
     GeoMultiTrajectory,
     GeoPolygon
 )
+
+import concurrent.futures
 from trajgenpy.Query import query_features
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -24,11 +26,14 @@ from typing import List
 import pickle
 from sklearn.metrics.pairwise import rbf_kernel
 log = trajgenpy.Logging.get_logger()
-
+import cv2
 import datetime
 import HEDAC_basic
-    
-    
+import time
+from collections import defaultdict
+from shapely import plotting as shplt
+from skimage.draw import polygon as ski_polygon
+
 class EnvironmentBuilder:
     def __init__(self):
         self.polygon_file = None
@@ -106,10 +111,11 @@ class Environment:
         print(f"Size of x edges: {len(self.xedges)}")
         print(f"Size of y edges: {len(self.yedges)}")
 
-        for key in tags.keys():
+
+        def process_feature(key):
             feature = query_features(
-                GeoPolygon(query_region),
-                tags[key],
+            GeoPolygon(query_region),
+            tags[key],
             )
             
             feature_collection = [geom for feature in feature.values() for geom in feature.geoms]
@@ -119,8 +125,18 @@ class Environment:
                 feature_geom = GeoMultiTrajectory(feature_collection).set_crs("EPSG:2197")
             else:
                 raise ValueError("Invalid feature type in feature collection")
-            self.heatmaps[key] = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
-            self.features[key] = feature_geom
+            start_time = time.time()
+            heatmap = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
+            end_time = time.time()
+            print(f"Time taken to generate heatmap for {key}: {end_time - start_time} seconds")
+            return key, heatmap, feature_geom
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = {executor.submit(process_feature, key): key for key in tags.keys()}
+            for future in concurrent.futures.as_completed(futures):
+                key, heatmap, feature_geom = future.result()
+                self.heatmaps[key] = heatmap
+                self.features[key] = feature_geom
 
     def image_to_world(self, x, y):
         return image_to_world(x, y, self.meter_per_bin, self.minx, self.miny, self.buffer)
@@ -141,7 +157,6 @@ class Environment:
     # # Apply the heatmap generation to all road lines
     def generate_heatmap(self, geometry_collection, sample_distance, infill_geometries = True):
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
-        x_y_combinations = np.array(np.meshgrid(self.xedges, self.yedges)).T.reshape(-1, 2)
         for feature in geometry_collection.geoms:
             interpolated_points = []
             if isinstance(feature, LineString):
@@ -149,9 +164,9 @@ class Environment:
                 interpolated_points = self.interpolate_line(line, sample_distance)
             elif isinstance(feature, shapely.geometry.Polygon):        
                 if infill_geometries:
-                    # Check if all combinations of xedges and yedges are inside the polygon
-                    mask = np.array([feature.contains(shapely.geometry.Point(x, y)) for x, y in x_y_combinations])
-                    interpolated_points.extend([shapely.geometry.Point(x, y) for (x, y), m in zip(x_y_combinations, mask) if m])
+                    poly_coordinates = np.array(list(feature.exterior.coords))
+                    rr, cc = ski_polygon(poly_coordinates[:, 0], poly_coordinates[:, 1])
+                    interpolated_points.extend([shapely.geometry.Point(x, y) for x, y in zip(rr, cc)])
                 else:
                     line = feature.exterior
                     interpolated_points = self.interpolate_line(line, sample_distance)
@@ -194,7 +209,96 @@ class Environment:
         # heatmap = heatmap / np.max(heatmap)
         
         return heatmap
-    
+
+    def binary_cut(self, lines, max_length, result = []):
+        while lines:
+            line = lines.pop(0)
+            if line.length > max_length:
+                lines.extend(self.cut(line, line.length / 2))
+            else:
+                result.append(line)
+        return result
+
+
+    def cut(self, line, distance):
+        if line.length >= distance:
+            coords = list(line.coords)
+            cut_point = line.interpolate(distance)
+            cut_index = next((i for i, p in enumerate(coords) if line.project(shapely.Point(p)) >= distance), len(coords) - 1)
+            return LineString(coords[:cut_index] + [(cut_point.x, cut_point.y)]), LineString([(cut_point.x, cut_point.y)] + coords[cut_index:])
+        else: 
+            return line, LineString()
+        
+    def shrink_polygon(self, p: shapely.Polygon|shapely.MultiPolygon, buffer_size):
+        shrunken_polygon = p.buffer(
+            -buffer_size, join_style="mitre",single_sided=True
+        )
+        if shrunken_polygon.is_empty:
+            return [p]
+
+        return [p, *self.shrink_polygon(shrunken_polygon, buffer_size)]
+
+    def create_polygons_from_contours(self,contours, hierarchy, min_area):
+        cnt_children = defaultdict(list)
+        child_contours = set()
+        assert hierarchy.shape[0] == 1
+        for idx, (_, _, _, parent_idx) in enumerate(hierarchy[0]):
+            if parent_idx != -1:
+                child_contours.add(idx)
+                cnt_children[parent_idx].append(contours[idx])
+            all_polygons = []
+        for idx, cnt in enumerate(contours):
+            if idx not in child_contours and cv2.contourArea(cnt) >= min_area:
+                assert cnt.shape[1] == 1
+                cnt[:, 0, :] = np.array([self.image_to_world(x, y) for x, y in cnt[:, 0, :]])
+                poly = shapely.Polygon(
+                shell=cnt[:, 0, :],
+                holes=[
+                    np.array([self.image_to_world(x, y) for x, y in cnt[:, 0, :]])
+                    for c in cnt_children.get(idx, [])
+                    if cv2.contourArea(c) >= min_area
+                ],
+                )
+                all_polygons.append(poly)
+        return all_polygons
+
+    def informative_coverage(self, heatmap,sensor_radius = 10, max_length = 500, contour_smoothing=5, contour_threshold=0.00001):
+        start_time = time.time()
+        mask = np.zeros_like(heatmap, dtype=np.uint8)
+        mask[heatmap > contour_threshold] = 1
+        min_area = sensor_radius # Should be the area of the sensor footprint
+        contours, hierarchy = cv2.findContours(mask.T, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            raise ValueError("No probability contours found")
+        
+        all_polygons = self.create_polygons_from_contours(contours, hierarchy, min_area)
+        print(f"Number of polygons: {len(all_polygons)}")
+        coverage_polygons = []
+        for polygon in all_polygons:
+            polygon = polygon.simplify(contour_smoothing, preserve_topology=False)
+            coverage_polygons.extend(self.shrink_polygon(polygon, sensor_radius))
+        result_list = []
+        for poly_item in coverage_polygons:
+            if isinstance(poly_item, shapely.geometry.MultiPolygon):
+                result_list.extend(list(poly_item.geoms))
+            else:
+                result_list.append(poly_item)
+
+        result_list = [poly for poly in result_list if poly.area >= 1]
+        query_list = [LineString(poly.exterior.coords) for poly in result_list]
+        result = self.binary_cut(query_list, max_length)
+        
+        # Remove the same distance from the linestrings as the sensor footprint
+        result = [self.cut(line,sensor_radius)[1] for line in result if line.length >= sensor_radius]
+        end_time = time.time()
+        print(f"Time taken to generate coverage patterns: {end_time - start_time} seconds")
+        # shplt.plot_line(shapely.MultiLineString(result), add_points=False)
+        # self.polygon.plot(linestyle="--", facecolor="none", edgecolor="black")
+        # print(f"Number of lines: {len(result)}")
+        # plt.grid(False)
+        # plt.show()
+        return result        
+        
     def interactive_plot(self, use_sliders=True, show_basemap = True, show_features=False, export=False):
         # Apply Gaussian filter to the combined heatmap
         # Calculate the width of the Gaussian filter in pixels
@@ -248,7 +352,13 @@ class Environment:
         cbar.mappable.set_clim(vmin=heatmap.min(), vmax=heatmap.max())
         cbar.set_label('Target Distribution')
         extent = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
+        heatmap[heatmap < 0.00001] = 0
         heatmap_img = plt.imshow(heatmap.T, extent=extent, origin='lower', cmap=custom_cmap, alpha=alpha)
+
+        # if plot_coverage:
+        #     lines = self.informative_coverage(heatmap)
+        #     coverage = GeoMultiTrajectory(lines, crs="EPSG:2197")
+        #     coverage.plot(color="red", linestyle="--", alpha=0.4)
         if use_sliders:
             filter_sliders = {}
             multiplier_sliders = {}
@@ -273,6 +383,10 @@ class Environment:
                 heatmap_img.set_data(combined_heatmap.T)
                 cbar.mappable.set_clim(vmin=combined_heatmap.min(), vmax=combined_heatmap.max())
                 heatmap_img.set_cmap(custom_cmap)
+                
+                lines = self.informative_coverage(heatmap)
+                coverage = GeoMultiTrajectory(lines, crs="EPSG:2197")
+                coverage.plot(color="red", linestyle="--", alpha=0.4)
                 plt.draw()
 
             def save(event):
@@ -352,7 +466,6 @@ class ExperimentData:
     meter_per_bin: float
     computation_time: float = 0.0
 
-# TODO Add this function to the Environment modelling
 def generate_dataset(environment_file,features,sigma_features,alpha_features, n_trajectories, steps,experiment_dir=None, generate_all=True, common_depot=False):
     # Create a new environment
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
@@ -586,6 +699,7 @@ def generate_water_dataset():
 # Urban: Parks, roads, pathways, Lakes, river, wetlands
 # Water: Wetlands, banks, roads
 
+
 if __name__ == "__main__":
     # generate_urban_dataset()
     # generate_flatnature_dataset()
@@ -596,10 +710,10 @@ if __name__ == "__main__":
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
-    sigma_features = {"roads": 3.0, "wetlands": 3.0}
+    sigma_features = {"roads": 3, "wetlands": 3.0}
     alpha_features = {"roads": 1, "wetlands": 0.5}
     
-    env = EnvironmentBuilder().set_polygon_file(polygon_file).set_buffer(50).set_feature(
+    env = EnvironmentBuilder().set_polygon_file(polygon_file).set_feature(
         "roads",{
                     "highway": [
                         "service",
@@ -612,7 +726,9 @@ if __name__ == "__main__":
                         ]
                     }
     ).set_feature("wetlands",  {"natural": ["water", "wetland"]}).build()
-    
+    heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
+    env.informative_coverage(heatmap)
+    env.interactive_plot(use_sliders=True, show_basemap=True, show_features=False)
     # heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
     # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, levels=10, cmap="jet")
     # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, cmap="jet")
@@ -623,5 +739,5 @@ if __name__ == "__main__":
     # plt.show()
     
     
-    env.interactive_plot(use_sliders=True, show_basemap=True, show_features=False, export=True)
+    # env.interactive_plot(use_sliders=True, show_basemap=True, show_features=False, export=True)
     
