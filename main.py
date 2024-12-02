@@ -18,7 +18,6 @@ from trajallocpy import Agent, CoverageProblem, Experiment, Task
 import environment_modelling
 from environment_modelling import world_to_image, image_to_world, ExperimentData, get_filter_sigma
 from scipy.spatial import KDTree
-from tqdm import tqdm
 
 def task_allocation(boundary, tasks, agent_list):
     # Normalize the geoms
@@ -134,7 +133,8 @@ def evaluate_experiment(heatmap, trajectories, sensor_range, sensor_variance,tas
             # information_gain_from_points_tree(point_in_heatmap_coords, heatmap, tree, sensor_range, sensor_variance)
             # sensor_distances = np.sqrt((x - point_in_heatmap_coords[1])**2 + (y - point_in_heatmap_coords[0])**2)
             # sensor_mask = sensor_distances <= sensor_range
-            sensor_mask = get_sensor_mask([point_in_heatmap_coords], heatmap, tree, sensor_range)
+            sensor_range_in_bins = sensor_range / experiment_data.meter_per_bin
+            sensor_mask = get_sensor_mask([point_in_heatmap_coords], heatmap, tree, sensor_range_in_bins)
             # Global information gain
             global_sensor_mask += sensor_mask
             temp_information_gain = (heatmap*global_sensor_mask).sum()
@@ -240,7 +240,7 @@ def run_hedac_experiments(environment_file, features, sigma_features, alpha_feat
     sensor_variance = 2
     common_depot = True
     total_budget = 8000
-    for n_agents in [3,4,5]:
+    for n_agents in [2, 3, 4, 5]:
         task_length = int(total_budget/n_agents)
         run_hedac_experiment(sensor_range,features, sigma_features,alpha_features, sensor_variance, 0, n_agents, task_length, common_depot, environment_file)
 
@@ -276,22 +276,15 @@ def run_trajalloc_experiment(environment_file, title, number_of_agents, agent_ca
         experiment: ExperimentData
         experiment_name = os.path.basename(path)
         
-        def process_task(task):
+        for task in experiment.tasks:
             task: Task.TrajectoryTask
             task_length = np.random.normal(mean_length, variance_length)
             point_list = list(task.trajectory.coords)[:int(task_length)]
-            # temp_reward= information_gain_from_points(point_list, experiment.heatmap, sensor_range, sensor_variance)
-            task.reward = information_gain_from_points_tree(point_list,experiment.heatmap, heatmap_tree, sensor_range_bins_units, sensor_variance) 
+            task.reward = information_gain_from_points_tree(point_list, experiment.heatmap, heatmap_tree, sensor_range_bins_units, sensor_variance)
             task.reward = reward_shaping(task.reward)
             point_list = [image_to_world(p[0], p[1], experiment.meter_per_bin, experiment.min_x, experiment.min_y, experiment.buffer) for p in point_list]
             task.trajectory = LineString(point_list)
             task.__post_init__()
-            return task
-
-        with concurrent.futures.ThreadPoolExecutor(8) as executor:
-            updated_tasks = list(executor.map(process_task, experiment.tasks))
- 
-        experiment.tasks = updated_tasks
         
         # The total reward will most likely be above 100. This leads to a optimistic reward...
         total_reward = sum(task.reward for task in experiment.tasks)
@@ -376,17 +369,9 @@ def run_allocation_experiments(environment_file):
         for n_agents in [2, 3, 4, 5]:
             budget = int(total_budget/n_agents)
             futures.append(executor.submit(run_trajalloc_experiment, environment_file, "exponential_shaping", n_agents, budget, sensor_range, sensor_variance, exponential_shaping, common_depot))
-            futures.append(executor.submit(run_trajalloc_experiment,environment_file, "information_reward", n_agents, budget, sensor_range, sensor_variance, no_shaping, common_depot))
             futures.append(executor.submit(run_trajalloc_experiment,environment_file, "static_reward", n_agents, budget, sensor_range, sensor_variance, static_reward_shaping, common_depot))
-            # futures.append(executor.submit(run_trajalloc_experiment,environment_file, "exponential_shaping_low_budget", n_agents, budgets[n_agents-2], sensor_range, sensor_variance, exponential_shaping, common_depot))
-
-        with tqdm(total=len(futures), desc="Running experiments") as pbar:
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"An error occurred: {e}")
-                pbar.update(1)
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
 def generate_sweep_tasks(polygon_file, distance_between_sweeps):
     print("Generating sweep tasks")
@@ -518,14 +503,15 @@ def generate_sweep_tasks(polygon_file, distance_between_sweeps):
 if __name__ == '__main__':
     # Distance between sweeps should be 20 to match the trajectory generation
     # generate_sweep_tasks("data/DemaScenarios/FlatTerrainNature.geojson", 20)
-    # run_allocation_experiments("FlatTerrainNature")
+    run_allocation_experiments("FlatTerrainNature")
     # run_allocation_experiments("HillyTerrainNature")
     # run_allocation_experiments("Urban")
     # run_allocation_experiments("Water")
     # generate_dataset(environment_file,40,200, True)
+    exit(0)
     
-    sigma_features = {"roads": 3.0, "wetlands": 3.0}
-    alpha_features = {"roads": 1, "wetlands": 0.5}
+    sigma_features = {"roads": 3, "wetlands": 3.0}
+    alpha_features = {"roads": 0.5, "wetlands": 1}
     features = {"wetlands":  {"natural": ["water", "wetland"]},
                 "roads":{
                     "highway": [
@@ -540,4 +526,3 @@ if __name__ == '__main__':
                     }
                 }
     run_hedac_experiments("FlatTerrainNature", features, sigma_features, alpha_features,"experiments/FlatTerrainNature/")
-    

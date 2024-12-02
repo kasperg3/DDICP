@@ -210,7 +210,8 @@ class Environment:
         
         return heatmap
 
-    def binary_cut(self, lines, max_length, result = []):
+    def binary_cut(self, lines, max_length):
+        result = []
         while lines:
             line = lines.pop(0)
             if line.length > max_length:
@@ -219,6 +220,17 @@ class Environment:
                 result.append(line)
         return result
 
+    def modulus_cut(self,lines,max_length):
+        result = []
+        while lines:
+            line = lines.pop(0)
+            if line.length > max_length:
+                num_segments = int(np.ceil(line.length / max_length))
+                segment_length = line.length / num_segments
+                lines.extend(self.cut(line, segment_length))
+            else:
+                result.append(line)
+        return result
 
     def cut(self, line, distance):
         if line.length >= distance:
@@ -231,7 +243,7 @@ class Environment:
         
     def shrink_polygon(self, p: shapely.Polygon|shapely.MultiPolygon, buffer_size):
         shrunken_polygon = p.buffer(
-            -buffer_size, join_style="mitre",single_sided=True
+            -buffer_size, join_style="round",single_sided=True
         )
         if shrunken_polygon.is_empty:
             return [p]
@@ -241,6 +253,7 @@ class Environment:
     def create_polygons_from_contours(self,contours, hierarchy, min_area):
         cnt_children = defaultdict(list)
         child_contours = set()
+        image_coordinates_min_area = min_area/self.meter_per_bin
         assert hierarchy.shape[0] == 1
         for idx, (_, _, _, parent_idx) in enumerate(hierarchy[0]):
             if parent_idx != -1:
@@ -248,7 +261,7 @@ class Environment:
                 cnt_children[parent_idx].append(contours[idx])
             all_polygons = []
         for idx, cnt in enumerate(contours):
-            if idx not in child_contours and cv2.contourArea(cnt) >= min_area:
+            if idx not in child_contours and cv2.contourArea(cnt) >= image_coordinates_min_area:
                 assert cnt.shape[1] == 1
                 cnt[:, 0, :] = np.array([self.image_to_world(x, y) for x, y in cnt[:, 0, :]])
                 poly = shapely.Polygon(
@@ -256,7 +269,7 @@ class Environment:
                 holes=[
                     np.array([self.image_to_world(x, y) for x, y in cnt[:, 0, :]])
                     for c in cnt_children.get(idx, [])
-                    if cv2.contourArea(c) >= min_area
+                    if cv2.contourArea(c) >= image_coordinates_min_area
                 ],
                 )
                 all_polygons.append(poly)
@@ -266,7 +279,7 @@ class Environment:
         start_time = time.time()
         mask = np.zeros_like(heatmap, dtype=np.uint8)
         mask[heatmap > contour_threshold] = 1
-        min_area = sensor_radius # Should be the area of the sensor footprint
+        min_area = 0.01 # Should be the area of the sensor footprint
         contours, hierarchy = cv2.findContours(mask.T, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
         if not contours:
             raise ValueError("No probability contours found")
@@ -285,34 +298,51 @@ class Environment:
                 result_list.append(poly_item)
 
         result_list = [poly for poly in result_list if poly.area >= 1]
-        query_list = [LineString(poly.exterior.coords) for poly in result_list]
-        result = self.binary_cut(query_list, max_length)
+        
+        for i, poly in enumerate(result_list):
+            coords = list(poly.exterior.coords)
+            initial_point = shapely.geometry.Point(0, 0)
+            min_dist_index = min(range(len(coords)), key=lambda index: initial_point.distance(shapely.geometry.Point(coords[index])))
+            min_dist_index = min(range(len(coords)), key=lambda index: coords[index][0]**2 + coords[index][1]**2)
+            new_coords = coords[min_dist_index:] + coords[:min_dist_index]
+            result_list[i] = shapely.geometry.Polygon(new_coords)
+            
+        # Evaluation of the line partitioning    
+        def calculate_sum_min_distances(lines):
+            initial_points = [shapely.geometry.Point(line.coords[0]) for line in lines]
+            sum_min_distances = 0
+            for poly in lines:
+                min_distance = min(poly.distance(point) for point in initial_points if point != shapely.geometry.Point(poly.coords[0]))
+                sum_min_distances += min_distance
+            return sum_min_distances
+
+        # start_time = time.time()
+        # binary_result = self.binary_cut([LineString(poly.exterior.coords) for poly in result_list], max_length)
+        # binary_time = time.time() - start_time
+        # print(f"Binary cut time: {binary_time} seconds, number of lines: {len(binary_result)}")
+        # binary_sum_min_distances = calculate_sum_min_distances(binary_result)
+        # print(f"Binary cut: Sum of distances to the nearest start-point: {binary_sum_min_distances}")
+        
+        start_time = time.time()
+        result = self.modulus_cut([LineString(poly.exterior.coords) for poly in result_list], max_length)
+        modulus_time = time.time() - start_time
+        print(f"Modulus cut time: {modulus_time} seconds, number of lines: {len(result)}")
+        # modulus_sum_min_distances = calculate_sum_min_distances(result)
+        # print(f"Modulus cut: Sum of distances to the nearest start-point: {modulus_sum_min_distances}")
         
         # Remove the same distance from the linestrings as the sensor footprint
         result = [self.cut(line,sensor_radius)[1] for line in result if line.length >= sensor_radius]
         end_time = time.time()
         print(f"Time taken to generate coverage patterns: {end_time - start_time} seconds")
         # shplt.plot_line(shapely.MultiLineString(result), add_points=False)
-        # self.polygon.plot(linestyle="--", facecolor="none", edgecolor="black")
-        # print(f"Number of lines: {len(result)}")
+        # shplt.plot_points([shapely.Point(line.coords[0][0], line.coords[0][1]) for line in result], color='green', marker='o', label='Start Points')
+        # shplt.plot_points([shapely.Point(line.coords[-1][0], line.coords[-1][1])  for line in result], color='red', marker='x', label='End Points')
+        # # self.polygon.plot(linestyle="--", facecolor="none", edgecolor="black")
         # plt.grid(False)
         # plt.show()
         return result        
         
-    def interactive_plot(self, use_sliders=True, show_basemap = True, show_features=False, export=False):
-        # Apply Gaussian filter to the combined heatmap
-        # Calculate the width of the Gaussian filter in pixels
-        filter_width_meters = 10  # Example width in meters
-        filter_width_pixels = filter_width_meters / self.meter_per_bin
-        
-        # Calculate the sigma value for the Gaussian filter
-        sigma = filter_width_pixels / (2 * np.sqrt(2 * np.log(2)))
-        
-        sigma_features = {key: sigma for key in self.heatmaps.keys()}
-        alpha_features = {key: 1 for key in self.heatmaps.keys()}
-        
-        heatmap = self.get_combined_heatmap(sigma_features, alpha_features)
-        
+    def interactive_plot(self,heatmap, use_sliders=True, show_basemap = True, show_features=False, export=False):
         # Create a figure and axis for the slider
         fig, ax = plt.subplots()
         # Set xlim and ylim based on the bounding box of the polygon
@@ -606,10 +636,8 @@ def sample_points(prob_dist, num_points):
 
 
 def generate_flatnature_dataset():
-    # sigma_wetland = get_filter_sigma(10, env)
-    # sigma_roads = get_filter_sigma(30, env)
     sigma_features = {"roads": 3.0, "wetlands": 3.0}
-    alpha_features = {"roads": 1, "wetlands": 0.5}
+    alpha_features = {"roads": 0.3, "wetlands": 1}
     features = {"wetlands":  {"natural": ["water", "wetland"]},
                 "roads":{
                     "highway": [
@@ -702,16 +730,16 @@ def generate_water_dataset():
 
 if __name__ == "__main__":
     # generate_urban_dataset()
-    # generate_flatnature_dataset()
+    generate_flatnature_dataset()
     # generate_hillyterrainnature_dataset()
     # generate_water_dataset()
-    # exit(0)
+    exit(0)
     # polygon_file = "data/DemaScenarios/HillyTerrainNature.geojson"
     # polygon_file = "data/DemaScenarios/Urban.geojson"
     # polygon_file = "data/DemaScenarios/Water.geojson"
     polygon_file = "data/DemaScenarios/FlatTerrainNature.geojson"
     sigma_features = {"roads": 3, "wetlands": 3.0}
-    alpha_features = {"roads": 1, "wetlands": 0.5}
+    alpha_features = {"roads": 0.5, "wetlands": 1}
     
     env = EnvironmentBuilder().set_polygon_file(polygon_file).set_feature(
         "roads",{
@@ -727,8 +755,8 @@ if __name__ == "__main__":
                     }
     ).set_feature("wetlands",  {"natural": ["water", "wetland"]}).build()
     heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
-    env.informative_coverage(heatmap)
-    env.interactive_plot(use_sliders=True, show_basemap=True, show_features=False)
+    # env.informative_coverage(heatmap)
+    env.interactive_plot(heatmap, use_sliders=True, show_basemap=True, show_features=False)
     # heatmap = env.get_combined_heatmap(sigma_features, alpha_features)
     # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, levels=10, cmap="jet")
     # plt.contourf(env.xedges[:-1], env.yedges[:-1], heatmap.T, cmap="jet")
